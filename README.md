@@ -1,235 +1,170 @@
-# warehouse18
+# Warehouse18 – Inventory & Asset Management (RFID-ready)
 
-Warehouse 18 inventory control (entries/exits/movements) with sync to a remote API.
+Warehouse18 es un sistema de gestión de inventario diseñado para **entornos reales**:  
+almacenes con **activos serializados**, **consumibles por cantidad**, **barcodes compartidos por pack**, **RFID**, y **integraciones externas inestables** (APIs, red, etc.).
 
-@startuml
-hide circle
-skinparam linetype ortho
-skinparam classAttributeIconSize 0
+El modelo prioriza:
+- consistencia de datos
+- trazabilidad completa
+- tolerancia a fallos
+- y separación clara entre dominio, estado e integración
 
-' =========================
-' Core catalog / master data
-' =========================
-class users {
-  +id (PK)
-  username (UNIQUE)
-  full_name
-  email (UNIQUE, NULL)
-  role
-  department (NULL)
-  is_active
-  password_hash (NULL)
-  auth_provider
-  last_login_at (NULL)
-  created_at
-  updated_at
-}
+---
 
-class items {
-  +id (PK)
-  name
-  description (NULL)
-  category (NULL)
-  uom
-  is_serialized
-  min_stock
-  reorder_point
-  is_active
-  created_at
-  updated_at
-}
+## 🧠 Principios de diseño
 
-class assets {
-  +id (PK)
-  asset_code (UNIQUE)  ' barcode = EPC
-  item_id (FK, NULL)
-  status
-  created_at
-  updated_at
-}
+- **Activos ≠ Consumibles**
+  - Los activos serializados se gestionan **unidad a unidad**
+  - Los consumibles se gestionan **por cantidad**
+- **Un barcode no siempre identifica una unidad**
+  - En consumibles, el barcode identifica un **contenedor/pack**
+- **El sistema no depende de APIs externas para funcionar**
+- **Nada se pierde si no hay internet**
+- **Todo lo que pasa queda registrado**
 
-class locations {
-  +id (PK)
-  code (UNIQUE)
-  name
-  type
-  parent_id (FK, NULL)
-  is_active
-}
+---
 
-' =========================
-' Integration / outbox (polymorphic)
-' =========================
-class integration_outbox {
-  +id (PK)
-  direction           ' outbound
-  target_system       ' external_api
-  entity_type         ' asset, movement, container, etc
-  entity_id           ' polymorphic reference (NOT a FK)
-  action              ' push_update, notify_move...
-  payload_json
-  status              ' pending, sent, error
-  retries
-  last_attempt_at (NULL)
-  next_retry_at (NULL)
-  created_at
-}
+## 🧩 Conceptos clave del dominio
 
-' =========================
-' Current-state tables (derived)
-' =========================
-class inventory_stock {
-  +id (PK)
-  item_id (FK)
-  location_id (FK)
-  quantity
-  updated_at
-}
+### Items
+Representan el **tipo de cosa** (ej. *Tablet*, *Tornillos M4*).
 
-class asset_location {
-  +asset_id (PK/FK)
-  location_id (FK)
-  since
-}
+Campos clave:
+- `is_serialized`
+- `uom` (unit of measure)
+- `min_stock`, `reorder_point`
 
-' =========================
-' Movements (event log)
-' =========================
-class movement_types {
-  +id (PK)
-  code (UNIQUE)  ' GR, GI, GT, ADJ, INFO
-  name
-  affects_stock
-  affects_location
-  stock_sign  ' +1, -1, 0
-}
+---
 
-class movements {
-  +id (PK)
-  movement_type_id (FK)
-  item_id (FK, NULL)
-  quantity
-  from_location_id (FK, NULL)
-  to_location_id (FK, NULL)
-  reference_type (NULL)  ' asset | container | other
-  reference_id (NULL)    ' polymorphic reference (NOT a FK)
-  user_id (FK, NULL)
-  created_at
-  notes (NULL)
-}
+### Assets (solo para items serializados)
+Representan **unidades físicas individuales**.
 
-class movement_assets {
-  +movement_id (PK/FK)
-  +asset_id (PK/FK)
-}
+- 1 asset = 1 EPC / barcode
+- No existen assets para consumibles
 
-' =========================
-' Consumable containers
-' =========================
-class stock_containers {
-  +id (PK)
-  container_code (UNIQUE)   ' barcode del pack/caja
-  item_id (FK)
-  location_id (FK)
-  quantity
-  status                    ' open, empty, discarded
-  created_at
-  updated_at
-}
+---
 
-' =========================
-' Observability / audit / errors
-' =========================
-class audit_log {
-  +id (PK)
-  at
-  user_id (FK, NULL)
-  action
-  entity_type
-  entity_id
-  before_json (NULL)
-  after_json (NULL)
-  request_id (NULL)
-}
+### Stock Containers (packs de consumibles)
+Representan **cajas/bolsas/lotes** de consumibles con un único barcode.
 
-class error_log {
-  +id (PK)
-  happened_at
-  severity
-  source
-  operation (NULL)
-  entity_type (NULL)
-  entity_id (NULL)
-  user_id (FK, NULL)
-  request_id (NULL)
-  message
-  exception_type (NULL)
-  stacktrace (NULL)
-  metadata_json (NULL)
-  resolved_at (NULL)
-  resolved_by (FK, NULL)
-  resolution_notes (NULL)
-}
+- 1 barcode → N unidades dentro
+- La cantidad se descuenta con el uso
+- No convierten el consumible en asset
 
-class asset_enrichment {
-  +asset_id (PK/FK)
-  serial_number (NULL)
-  sync_status
-  last_sync_at (NULL)
-  last_error (NULL)
-  retries
-}
+---
 
-' =========================
-' Relationships
-' =========================
+### Inventory Stock
+Estado derivado del stock **por item y ubicación**.
 
-' items <-> assets
-items "1" <-- "0..*" assets : item_id
+- Para consumibles: cantidad real
+- Para activos: opcional (normalmente se deriva por conteo)
 
-' items <-> stock containers
-items "1" <-- "0..*" stock_containers : item_id
+---
 
-' locations hierarchy
-locations "0..1" <-- "0..*" locations : parent_id
+### Movements
+Registro inmutable de **todo lo que ocurre**:
 
-' inventory stock
-items "1" <-- "0..*" inventory_stock : item_id
-locations "1" <-- "0..*" inventory_stock : location_id
+- GR (Goods Receipt)
+- GI (Goods Issue)
+- GT (Goods Transfer)
+- ADJ (Adjustment)
+- INFO (movimientos informativos)
 
-' asset current location
-assets "1" <-- "0..1" asset_location : asset_id
-locations "1" <-- "0..*" asset_location : location_id
+Soporta:
+- movimientos por cantidad
+- movimientos por assets
+- cambios de ubicación
+- referencias a assets o contenedores
 
-' stock container current location
-locations "1" <-- "0..*" stock_containers : location_id
+---
 
-' movement types & movements
-movement_types "1" <-- "0..*" movements : movement_type_id
+### Asset Enrichment
+Capa opcional para **datos externos** (ej. serial number desde una API).
 
-' movements reference locations
-locations "1" <-- "0..*" movements : from_location_id
-locations "1" <-- "0..*" movements : to_location_id
+- No bloquea operaciones
+- Tiene estado (`pending`, `ok`, `error`, etc.)
+- Controla reintentos
 
-' movements reference user
-users "1" <-- "0..*" movements : user_id
+---
 
-' movements <-> assets
-movements "1" <-- "0..*" movement_assets : movement_id
-assets "1" <-- "0..*" movement_assets : asset_id
+### Integration Outbox
+Implementa el **Transactional Outbox Pattern**.
 
-' movements may reference item (qty-based)
-items "1" <-- "0..*" movements : item_id
+- Registra eventos pendientes de enviar a sistemas externos
+- Funciona incluso sin conexión
+- Reintentos controlados
+- No usa foreign keys (referencias polimórficas)
 
-' audit/error logs
-users "1" <-- "0..*" audit_log : user_id
-users "1" <-- "0..*" error_log : user_id
-users "1" <-- "0..*" error_log : resolved_by
+---
 
-' enrichment
-assets "1" <-- "0..1" asset_enrichment : asset_id
+### Audit & Error Logs
+Observabilidad completa:
 
-' NOTE: integration_outbox.entity_type/entity_id are polymorphic references
-' so we do NOT model them as FK relationships in the UML.
+- `audit_log`: quién hizo qué y cuándo
+- `error_log`: qué falló, por qué y si está resuelto
 
-@enduml
+---
+
+## 🗄️ Base de datos
+
+- **PostgreSQL**
+- Integridad garantizada con:
+  - PK / FK
+  - `CHECK` constraints
+  - `UNIQUE`
+  - triggers de negocio
+- Separación clara entre:
+  - dominio
+  - estado derivado
+  - integración
+  - observabilidad
+
+---
+
+## 🔒 Reglas de negocio (en resumen)
+
+- Un item serializado **no puede** tener stock containers
+- Un item no serializado **no debe** tener assets
+- Un movimiento por assets **no puede mezclar items**
+- Un contenedor con `quantity = 0` pasa automáticamente a `empty`
+- EPC / barcode de assets **no se reutiliza nunca**
+- La outbox **no depende** de la existencia de la entidad original
+
+Las reglas se aplican en:
+- Base de datos (constraints / triggers)
+- Aplicación
+- Documentación (`docs/business_rules.md`)
+
+---
+
+## 🛠️ Tecnologías
+
+- PostgreSQL
+- RFID / Barcode ready
+- API-first friendly
+- Pensado para workers asíncronos y sistemas distribuidos
+
+---
+
+## 📌 Estado del proyecto
+
+- Modelo de datos definido y validado
+- DDL PostgreSQL completo
+- Triggers de negocio implementados
+- Listo para implementación de backend
+
+---
+
+## 📄 Licencia
+
+Uso interno / proyecto privado (ajustar según necesidad).
+
+---
+
+## 💬 Nota final
+
+Este sistema está diseñado para **no romperse cuando el mundo real se comporta mal**:
+red caida, APIs lentas, usuarios humanos y procesos imperfectos.
+
+Si algo parece “más complejo de lo normal”, probablemente es porque evita
+un problema que ya ha ocurrido en producción alguna vez.
