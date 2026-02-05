@@ -1,0 +1,489 @@
+BEGIN;
+
+-- ============================================================
+-- Warehouse18 - PostgreSQL schema + triggers
+-- ============================================================
+
+-- Optional but common
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- ============================================================
+-- Helper: updated_at trigger
+-- ============================================================
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS trigger AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ============================================================
+-- users
+-- ============================================================
+CREATE TABLE IF NOT EXISTS users (
+  id              BIGSERIAL PRIMARY KEY,
+  username        TEXT NOT NULL UNIQUE,
+  full_name       TEXT NOT NULL,
+  email           TEXT UNIQUE,
+  role            TEXT NOT NULL,
+  department      TEXT,
+  is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+  password_hash   TEXT,
+  auth_provider   TEXT NOT NULL DEFAULT 'local',
+  last_login_at   TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  CONSTRAINT users_auth_provider_ck CHECK (auth_provider IN ('local','ldap','sso','rfid'))
+);
+
+DROP TRIGGER IF EXISTS trg_users_updated_at ON users;
+CREATE TRIGGER trg_users_updated_at
+BEFORE UPDATE ON users
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ============================================================
+-- items
+-- ============================================================
+CREATE TABLE IF NOT EXISTS items (
+  id             BIGSERIAL PRIMARY KEY,
+  name           TEXT NOT NULL,
+  description    TEXT,
+  category       TEXT,
+  uom            TEXT NOT NULL,                 -- e.g. pcs, m, kg, box
+  is_serialized  BOOLEAN NOT NULL DEFAULT FALSE,
+  min_stock      NUMERIC(18,6),
+  reorder_point  NUMERIC(18,6),
+  is_active      BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  CONSTRAINT items_stock_levels_ck CHECK (
+    (min_stock IS NULL OR min_stock >= 0)
+    AND (reorder_point IS NULL OR reorder_point >= 0)
+    AND (min_stock IS NULL OR reorder_point IS NULL OR reorder_point >= min_stock)
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_items_category ON items(category);
+
+DROP TRIGGER IF EXISTS trg_items_updated_at ON items;
+CREATE TRIGGER trg_items_updated_at
+BEFORE UPDATE ON items
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ============================================================
+-- locations (hierarchical)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS locations (
+  id         BIGSERIAL PRIMARY KEY,
+  code       TEXT NOT NULL UNIQUE,
+  name       TEXT NOT NULL,
+  type       TEXT NOT NULL,
+  parent_id  BIGINT REFERENCES locations(id) ON DELETE SET NULL,
+  is_active  BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_locations_parent ON locations(parent_id);
+
+-- ============================================================
+-- assets (serialized units)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS assets (
+  id          BIGSERIAL PRIMARY KEY,
+  asset_code  TEXT NOT NULL UNIQUE,             -- EPC == barcode (unique per physical unit)
+  item_id     BIGINT REFERENCES items(id) ON DELETE SET NULL,
+  status      TEXT NOT NULL DEFAULT 'active',   -- active, repair, scrapped, lost, inactive
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  CONSTRAINT assets_status_ck CHECK (status IN ('active','repair','scrapped','lost','inactive'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_assets_item ON assets(item_id);
+
+DROP TRIGGER IF EXISTS trg_assets_updated_at ON assets;
+CREATE TRIGGER trg_assets_updated_at
+BEFORE UPDATE ON assets
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ============================================================
+-- asset_enrichment (external API data)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS asset_enrichment (
+  asset_id      BIGINT PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+  serial_number TEXT,
+  sync_status   TEXT NOT NULL DEFAULT 'pending',  -- pending, ok, not_found, error
+  last_sync_at  TIMESTAMPTZ,
+  last_error    TEXT,
+  retries       INTEGER NOT NULL DEFAULT 0,
+
+  CONSTRAINT asset_enrichment_status_ck CHECK (sync_status IN ('pending','ok','not_found','error')),
+  CONSTRAINT asset_enrichment_retries_ck CHECK (retries >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_asset_enrichment_status ON asset_enrichment(sync_status);
+
+-- ============================================================
+-- inventory_stock (derived state per item+location)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS inventory_stock (
+  id          BIGSERIAL PRIMARY KEY,
+  item_id     BIGINT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+  location_id BIGINT NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+  quantity    NUMERIC(18,6) NOT NULL DEFAULT 0,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  CONSTRAINT inventory_stock_qty_ck CHECK (quantity >= 0),
+  CONSTRAINT uq_inventory_stock_item_loc UNIQUE (item_id, location_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_inventory_stock_item ON inventory_stock(item_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_stock_loc  ON inventory_stock(location_id);
+
+-- ============================================================
+-- asset_location (current location of each asset)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS asset_location (
+  asset_id     BIGINT PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+  location_id  BIGINT NOT NULL REFERENCES locations(id) ON DELETE RESTRICT,
+  since        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_asset_location_loc ON asset_location(location_id);
+
+-- ============================================================
+-- stock_containers (consumable packs with a barcode)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS stock_containers (
+  id             BIGSERIAL PRIMARY KEY,
+  container_code TEXT NOT NULL UNIQUE,   -- barcode del pack/caja
+  item_id        BIGINT NOT NULL REFERENCES items(id) ON DELETE RESTRICT,
+  location_id    BIGINT NOT NULL REFERENCES locations(id) ON DELETE RESTRICT,
+  quantity       NUMERIC(18,6) NOT NULL DEFAULT 0,
+  status         TEXT NOT NULL DEFAULT 'open', -- open, empty, discarded
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  CONSTRAINT stock_containers_qty_ck CHECK (quantity >= 0),
+  CONSTRAINT stock_containers_status_ck CHECK (status IN ('open','empty','discarded'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_stock_containers_item ON stock_containers(item_id);
+CREATE INDEX IF NOT EXISTS idx_stock_containers_loc  ON stock_containers(location_id);
+
+DROP TRIGGER IF EXISTS trg_stock_containers_updated_at ON stock_containers;
+CREATE TRIGGER trg_stock_containers_updated_at
+BEFORE UPDATE ON stock_containers
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ============================================================
+-- movement_types
+-- ============================================================
+CREATE TABLE IF NOT EXISTS movement_types (
+  id               BIGSERIAL PRIMARY KEY,
+  code             TEXT NOT NULL UNIQUE,          -- GR, GI, GT, ADJ, INFO
+  name             TEXT NOT NULL,
+  affects_stock    BOOLEAN NOT NULL,
+  affects_location BOOLEAN NOT NULL,
+  stock_sign       SMALLINT NOT NULL,             -- +1, -1, 0
+
+  CONSTRAINT movement_types_stock_sign_ck CHECK (stock_sign IN (-1,0,1)),
+  CONSTRAINT movement_types_sign_logic_ck CHECK (
+    (affects_stock = FALSE AND stock_sign = 0)
+    OR (affects_stock = TRUE  AND stock_sign IN (-1,1))
+  )
+);
+
+-- ============================================================
+-- movements (event log)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS movements (
+  id               BIGSERIAL PRIMARY KEY,
+  movement_type_id BIGINT NOT NULL REFERENCES movement_types(id) ON DELETE RESTRICT,
+  item_id          BIGINT REFERENCES items(id) ON DELETE SET NULL, -- qty-based; nullable for asset-based
+  quantity         NUMERIC(18,6),                                  -- nullable for asset-based moves
+  from_location_id BIGINT REFERENCES locations(id) ON DELETE SET NULL,
+  to_location_id   BIGINT REFERENCES locations(id) ON DELETE SET NULL,
+  reference_type   TEXT,   -- 'asset' | 'container' (polymorphic)
+  reference_id     BIGINT, -- polymorphic id (NOT FK)
+  user_id          BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  notes            TEXT,
+
+  CONSTRAINT movements_qty_ck CHECK (quantity IS NULL OR quantity >= 0),
+  CONSTRAINT movements_ref_type_ck CHECK (reference_type IS NULL OR reference_type IN ('asset','container')),
+  CONSTRAINT movements_ref_pair_ck CHECK (
+    (reference_type IS NULL AND reference_id IS NULL)
+    OR (reference_type IS NOT NULL AND reference_id IS NOT NULL)
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_movements_created_at ON movements(created_at);
+CREATE INDEX IF NOT EXISTS idx_movements_type       ON movements(movement_type_id);
+CREATE INDEX IF NOT EXISTS idx_movements_item       ON movements(item_id);
+CREATE INDEX IF NOT EXISTS idx_movements_user       ON movements(user_id);
+CREATE INDEX IF NOT EXISTS idx_movements_from_loc   ON movements(from_location_id);
+CREATE INDEX IF NOT EXISTS idx_movements_to_loc     ON movements(to_location_id);
+
+-- ============================================================
+-- movement_assets (bridge for asset-based moves)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS movement_assets (
+  movement_id BIGINT NOT NULL REFERENCES movements(id) ON DELETE CASCADE,
+  asset_id    BIGINT NOT NULL REFERENCES assets(id) ON DELETE RESTRICT,
+  PRIMARY KEY (movement_id, asset_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_movement_assets_asset ON movement_assets(asset_id);
+
+-- ============================================================
+-- audit_log
+-- ============================================================
+CREATE TABLE IF NOT EXISTS audit_log (
+  id          BIGSERIAL PRIMARY KEY,
+  at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  user_id     BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  action      TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id   BIGINT NOT NULL,
+  before_json JSONB,
+  after_json  JSONB,
+  request_id  TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_at      ON audit_log(at);
+CREATE INDEX IF NOT EXISTS idx_audit_log_user    ON audit_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_entity  ON audit_log(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_request ON audit_log(request_id);
+
+-- ============================================================
+-- error_log
+-- ============================================================
+CREATE TABLE IF NOT EXISTS error_log (
+  id               BIGSERIAL PRIMARY KEY,
+  happened_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  severity         TEXT NOT NULL,          -- info, warning, error, critical
+  source           TEXT NOT NULL,          -- api, rfid, db, worker, ui, external_api
+  operation        TEXT,
+  entity_type      TEXT,
+  entity_id        BIGINT,
+  user_id          BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  request_id       TEXT,
+  message          TEXT NOT NULL,
+  exception_type   TEXT,
+  stacktrace       TEXT,
+  metadata_json    JSONB,
+  resolved_at      TIMESTAMPTZ,
+  resolved_by      BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  resolution_notes TEXT,
+
+  CONSTRAINT error_log_severity_ck CHECK (severity IN ('info','warning','error','critical'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_error_log_time     ON error_log(happened_at);
+CREATE INDEX IF NOT EXISTS idx_error_log_sev_time ON error_log(severity, happened_at);
+CREATE INDEX IF NOT EXISTS idx_error_log_source   ON error_log(source, happened_at);
+CREATE INDEX IF NOT EXISTS idx_error_log_user     ON error_log(user_id, happened_at);
+CREATE INDEX IF NOT EXISTS idx_error_log_request  ON error_log(request_id);
+
+-- ============================================================
+-- integration_outbox (polymorphic)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS integration_outbox (
+  id              BIGSERIAL PRIMARY KEY,
+  direction       TEXT NOT NULL DEFAULT 'outbound',
+  target_system   TEXT NOT NULL DEFAULT 'external_api',
+  entity_type     TEXT NOT NULL,               -- asset, movement, container, etc
+  entity_id       BIGINT NOT NULL,              -- polymorphic reference (NOT FK)
+  action          TEXT NOT NULL,
+  payload_json    JSONB NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'pending', -- pending, sent, error
+  retries         INTEGER NOT NULL DEFAULT 0,
+  last_attempt_at TIMESTAMPTZ,
+  next_retry_at   TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  CONSTRAINT outbox_direction_ck CHECK (direction IN ('outbound','inbound')),
+  CONSTRAINT outbox_status_ck CHECK (status IN ('pending','sent','error')),
+  CONSTRAINT outbox_retries_ck CHECK (retries >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_pick
+  ON integration_outbox(status, next_retry_at NULLS FIRST, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_entity
+  ON integration_outbox(entity_type, entity_id);
+
+-- ============================================================
+-- TRIGGERS (Business rules)
+-- ============================================================
+
+-- (1) stock_containers only allowed for NON-serialized items
+CREATE OR REPLACE FUNCTION trg_stock_containers_item_must_be_non_serialized()
+RETURNS trigger AS $$
+DECLARE
+  v_is_serialized boolean;
+BEGIN
+  SELECT is_serialized INTO v_is_serialized
+  FROM items
+  WHERE id = NEW.item_id;
+
+  IF v_is_serialized IS NULL THEN
+    RAISE EXCEPTION 'Item % does not exist', NEW.item_id;
+  END IF;
+
+  IF v_is_serialized = TRUE THEN
+    RAISE EXCEPTION 'Cannot create stock_container for serialized item_id=%', NEW.item_id
+      USING ERRCODE = '23514';
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS t_stock_containers_non_serialized ON stock_containers;
+CREATE TRIGGER t_stock_containers_non_serialized
+BEFORE INSERT OR UPDATE OF item_id
+ON stock_containers
+FOR EACH ROW
+EXECUTE FUNCTION trg_stock_containers_item_must_be_non_serialized();
+
+
+-- (4) Auto-set stock_containers.status based on quantity
+CREATE OR REPLACE FUNCTION trg_stock_containers_status_by_qty()
+RETURNS trigger AS $$
+BEGIN
+  IF NEW.quantity <= 0 THEN
+    NEW.status := 'empty';
+  ELSIF NEW.status = 'empty' THEN
+    NEW.status := 'open';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS t_stock_containers_status_qty ON stock_containers;
+CREATE TRIGGER t_stock_containers_status_qty
+BEFORE INSERT OR UPDATE OF quantity, status
+ON stock_containers
+FOR EACH ROW
+EXECUTE FUNCTION trg_stock_containers_status_by_qty();
+
+
+-- (3) Prevent mixing different items inside the same movement_assets movement
+CREATE OR REPLACE FUNCTION trg_movement_assets_single_item()
+RETURNS trigger AS $$
+DECLARE
+  v_movement_id bigint;
+  v_item_count int;
+BEGIN
+  v_movement_id := COALESCE(NEW.movement_id, OLD.movement_id);
+
+  SELECT COUNT(DISTINCT a.item_id)
+    INTO v_item_count
+  FROM movement_assets ma
+  JOIN assets a ON a.id = ma.asset_id
+  WHERE ma.movement_id = v_movement_id;
+
+  IF v_item_count > 1 THEN
+    RAISE EXCEPTION 'movement_id % contains assets from different items', v_movement_id
+      USING ERRCODE = '23514';
+  END IF;
+
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS ct_movement_assets_single_item ON movement_assets;
+CREATE CONSTRAINT TRIGGER ct_movement_assets_single_item
+AFTER INSERT OR UPDATE OR DELETE
+ON movement_assets
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW
+EXECUTE FUNCTION trg_movement_assets_single_item();
+
+
+-- ============================================================
+-- OPTIONAL triggers (commented out)
+-- ============================================================
+
+
+-- (2) OPTIONAL: assets only allowed for SERIALIZED items
+CREATE OR REPLACE FUNCTION trg_assets_item_must_be_serialized()
+RETURNS trigger AS $$
+DECLARE
+  v_is_serialized boolean;
+BEGIN
+  IF NEW.item_id IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT is_serialized INTO v_is_serialized
+  FROM items
+  WHERE id = NEW.item_id;
+
+  IF v_is_serialized IS NULL THEN
+    RAISE EXCEPTION 'Item % does not exist', NEW.item_id;
+  END IF;
+
+  IF v_is_serialized = FALSE THEN
+    RAISE EXCEPTION 'Cannot create asset for non-serialized item_id=%', NEW.item_id
+      USING ERRCODE = '23514';
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS t_assets_serialized_only ON assets;
+CREATE TRIGGER t_assets_serialized_only
+BEFORE INSERT OR UPDATE OF item_id
+ON assets
+FOR EACH ROW
+EXECUTE FUNCTION trg_assets_item_must_be_serialized();
+
+
+
+-- (5) OPTIONAL: validate movements.reference_type/reference_id exists (polymorphic)
+CREATE OR REPLACE FUNCTION trg_movements_validate_reference()
+RETURNS trigger AS $$
+DECLARE
+  v_exists boolean;
+BEGIN
+  IF NEW.reference_type IS NULL AND NEW.reference_id IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  IF NEW.reference_type IS NULL OR NEW.reference_id IS NULL THEN
+    RAISE EXCEPTION 'reference_type and reference_id must be both NULL or both NOT NULL'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF NEW.reference_type = 'asset' THEN
+    SELECT EXISTS (SELECT 1 FROM assets WHERE id = NEW.reference_id) INTO v_exists;
+  ELSIF NEW.reference_type = 'container' THEN
+    SELECT EXISTS (SELECT 1 FROM stock_containers WHERE id = NEW.reference_id) INTO v_exists;
+  ELSE
+    RAISE EXCEPTION 'Invalid reference_type %', NEW.reference_type USING ERRCODE = '23514';
+  END IF;
+
+  IF NOT v_exists THEN
+    RAISE EXCEPTION 'Reference %/% does not exist', NEW.reference_type, NEW.reference_id
+      USING ERRCODE = '23503';
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS t_movements_validate_reference ON movements;
+CREATE TRIGGER t_movements_validate_reference
+BEFORE INSERT OR UPDATE OF reference_type, reference_id
+ON movements
+FOR EACH ROW
+EXECUTE FUNCTION trg_movements_validate_reference();
+
+
+COMMIT;
