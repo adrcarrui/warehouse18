@@ -87,5 +87,9 @@ def delete_stock_container(container_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=409, detail="Stock container not found")
 
     sc.is_active = False
-    db.commit()
-    return {"status": "ok"}
+    try:
+        db.commit()
+        return {"status": "ok"}
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(e.orig))

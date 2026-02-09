@@ -3,7 +3,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from warehouse18.infrastructure.db import get_db
 from warehouse18.domain.models import User
-from warehouse18.presentation.api.schemas import UserCreateIn, UserOut, UserUpdateIn  # <-- esto faltaba
+from warehouse18.presentation.api.schemas import UserCreateIn, UserOut, UserUpdateIn
+from sqlalchemy.exc import IntegrityError
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -18,8 +19,12 @@ def create_user(body: UserCreateIn, db: Session = Depends(get_db)):
 
     u = User(**body.model_dump())
     db.add(u)
-    db.commit()
-    db.refresh(u)
+    try:
+        db.commit()
+        db.refresh(u)
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(e.orig))
 
     return UserOut(
         id=u.id,
@@ -75,8 +80,12 @@ def update_user(user_id: int, body: UserUpdateIn, db: Session = Depends(get_db))
     if hasattr(u, "updated_at"):
         u.updated_at = func.now()
 
-    db.commit()
-    db.refresh(u)
+    try:
+        db.commit()
+        db.refresh(u)
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(e.orig))
 
     return UserOut(
         id=u.id,
@@ -102,5 +111,9 @@ def delete_user(user_id: int, db: Session = Depends(get_db)):
     if hasattr(u, "updated_at"):
         u.updated_at = func.now()
 
-    db.commit()
-    return {"status": "ok"}
+    try:
+        db.commit()
+        return {"status": "ok"}
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(e.orig))

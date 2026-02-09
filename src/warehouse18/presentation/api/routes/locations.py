@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from warehouse18.infrastructure.db import get_db
 from warehouse18.domain.models import Location
 from warehouse18.presentation.api.schemas import LocationCreateIn, LocationUpdateIn, LocationOut
+from sqlalchemy.exc import IntegrityError
 
 router = APIRouter(prefix="/locations", tags=["locations"])
 
@@ -21,9 +22,13 @@ def create_location(body: LocationCreateIn, db: Session = Depends(get_db)):
 
     loc = Location(**body.model_dump())
     db.add(loc)
-    db.commit()
-    db.refresh(loc)
-    return loc
+    try:
+        db.commit()
+        db.refresh(loc)
+        return loc
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(e.orig))
 
 
 @router.get("/", response_model=list[LocationOut])
@@ -60,9 +65,13 @@ def update_location(location_id: int, body: LocationUpdateIn, db: Session = Depe
     for k, v in data.items():
         setattr(loc, k, v)
 
-    db.commit()
-    db.refresh(loc)
-    return loc
+    try:
+        db.commit()
+        db.refresh(loc)
+        return loc
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(e.orig))
 
 
 @router.delete("/{location_id}")
@@ -73,5 +82,9 @@ def delete_location(location_id: int, db: Session = Depends(get_db)):
 
     # soft delete
     loc.is_active = False
-    db.commit()
-    return {"status": "ok"}
+    try:
+        db.commit()
+        return {"status": "ok"}
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(e.orig))

@@ -137,9 +137,13 @@ def update_asset(asset_id: int, body: AssetUpdateIn, db: Session = Depends(get_d
         else:
             db.add(AssetLocation(asset_id=a.id, location_id=loc_id))
 
-    db.commit()
-    db.refresh(a)
-    return _to_out(a)
+    try:
+        db.commit()
+        db.refresh(a)
+        return _to_out(a)
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(e.orig))
 
 
 @router.delete("/{asset_id}")
@@ -150,5 +154,9 @@ def delete_asset(asset_id: int, db: Session = Depends(get_db)):
 
     # “soft delete” usando status, porque tu tabla no tiene is_active
     a.status = "inactive"
-    db.commit()
-    return {"status": "ok"}
+    try:
+        db.commit()
+        return {"status": "ok"}
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(e.orig))

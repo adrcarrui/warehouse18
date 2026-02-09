@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from warehouse18.infrastructure.db import get_db
 from warehouse18.domain.models import Item
@@ -8,29 +9,72 @@ from warehouse18.presentation.api.schemas import ItemCreateIn, ItemUpdateIn, Ite
 router = APIRouter(prefix="/items", tags=["items"])
 
 
+def _norm_code(code: str | None) -> str | None:
+    """Normaliza item_code: recorta y convierte '' en None."""
+    if code is None:
+        return None
+    code = code.strip()
+    return code or None
+
+
+def _validate_stock_levels(min_stock, reorder_point):
+    # Deja que DB sea la autoridad, pero así evitamos 500 tontos.
+    if min_stock is not None and min_stock < 0:
+        raise HTTPException(status_code=409, detail="min_stock must be >= 0")
+    if reorder_point is not None and reorder_point < 0:
+        raise HTTPException(status_code=409, detail="reorder_point must be >= 0")
+    if min_stock is not None and reorder_point is not None and reorder_point < min_stock:
+        raise HTTPException(status_code=409, detail="reorder_point must be >= min_stock")
+
+
 @router.post("/", response_model=ItemOut)
 def create_item(body: ItemCreateIn, db: Session = Depends(get_db)):
-    # item_code es UNIQUE si no es null
-    if body.item_code:
-        exists = db.query(Item).filter(Item.item_code == body.item_code).first()
+    code = _norm_code(body.item_code)
+    _validate_stock_levels(body.min_stock, body.reorder_point)
+
+    # item_code UNIQUE si no es null (en DB está como índice único parcial)
+    if code is not None:
+        exists = db.query(Item).filter(Item.item_code == code).first()
         if exists:
             raise HTTPException(status_code=409, detail="item_code already exists")
 
-    it = Item(**body.model_dump())
-    db.add(it)
-    db.commit()
-    db.refresh(it)
-    return it
+    try:
+        payload = body.model_dump()
+        payload["item_code"] = code
+
+        it = Item(**payload)
+        db.add(it)
+        db.commit()
+        db.refresh(it)
+        return it
+
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(e.orig))
 
 
 @router.get("/", response_model=list[ItemOut])
-def list_items(db: Session = Depends(get_db)):
-    return db.query(Item).order_by(Item.id.asc()).all()
+def list_items(
+    db: Session = Depends(get_db),
+    include_inactive: bool = False,
+):
+    q = db.query(Item)
+    if not include_inactive:
+        q = q.filter(Item.is_active.is_(True))
+    return q.order_by(Item.id.asc()).all()
 
 
 @router.get("/{item_id}", response_model=ItemOut)
-def get_item(item_id: int, db: Session = Depends(get_db)):
-    it = db.query(Item).filter(Item.id == item_id).first()
+def get_item(
+    item_id: int,
+    db: Session = Depends(get_db),
+    include_inactive: bool = False,
+):
+    q = db.query(Item).filter(Item.id == item_id)
+    if not include_inactive:
+        q = q.filter(Item.is_active.is_(True))
+
+    it = q.first()
     if not it:
         raise HTTPException(status_code=409, detail="Item not found")
     return it
@@ -44,19 +88,36 @@ def update_item(item_id: int, body: ItemUpdateIn, db: Session = Depends(get_db))
 
     data = body.model_dump(exclude_unset=True)
 
-    # Si cambian item_code, validar unique cuando no sea null/vacio
-    if "item_code" in data and data["item_code"]:
-        exists = db.query(Item).filter(Item.item_code == data["item_code"], Item.id != item_id).first()
+    # Normaliza item_code si viene en el PATCH (permite "borrar" mandando "")
+    if "item_code" in data:
+        data["item_code"] = _norm_code(data["item_code"])
+
+    # Validación stock levels si tocan alguno de los dos
+    min_stock = data.get("min_stock", it.min_stock)
+    reorder_point = data.get("reorder_point", it.reorder_point)
+    _validate_stock_levels(min_stock, reorder_point)
+
+    # Si cambian item_code, validar unique cuando no sea null
+    if "item_code" in data and data["item_code"] is not None:
+        exists = (
+            db.query(Item)
+            .filter(Item.item_code == data["item_code"], Item.id != item_id)
+            .first()
+        )
         if exists:
             raise HTTPException(status_code=409, detail="item_code already exists")
 
-    # Aplicar cambios
-    for k, v in data.items():
-        setattr(it, k, v)
+    try:
+        for k, v in data.items():
+            setattr(it, k, v)
 
-    db.commit()
-    db.refresh(it)
-    return it
+        db.commit()
+        db.refresh(it)
+        return it
+
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(e.orig))
 
 
 @router.delete("/{item_id}")
@@ -65,7 +126,6 @@ def delete_item(item_id: int, db: Session = Depends(get_db)):
     if not it:
         raise HTTPException(status_code=409, detail="Item not found")
 
-    # soft delete
     it.is_active = False
     db.commit()
     return {"status": "ok"}
