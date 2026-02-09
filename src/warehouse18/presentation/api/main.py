@@ -1,16 +1,216 @@
-from fastapi import FastAPI
-from fastapi import FastAPI, HTTPException
-from psycopg.errors import CheckViolation, ForeignKeyViolation
+from fastapi import FastAPI, HTTPException, Depends
+from sqlalchemy.orm import Session
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
-from warehouse18.infrastructure.db import get_conn
+from warehouse18.infrastructure.db import get_db
 from warehouse18.presentation.api.schemas import (
     ReceiveContainerIn, ConsumeContainerIn, TransferContainerIn,
     ReceiveAssetIn, TransferAssetIn, IssueAssetIn,
     OkOut
 )
+from warehouse18.presentation.api.routes.users import router as users_router
+from warehouse18.presentation.api.routes.locations import router as locations_router
+from warehouse18.presentation.api.routes.items import router as items_router
+from warehouse18.presentation.api.routes.assets import router as assets_router
+from warehouse18.presentation.api.routes.stock_containers import router as stock_containers_router
+from warehouse18.presentation.api.routes.inventory_stock import router as inventory_stock_router
+from warehouse18.presentation.api.routes.movement_types import router as movement_types_router
+from warehouse18.presentation.api.routes.movements import router as movements_router
 
-app = FastAPI(title="warehouse18")
+app = FastAPI(title="warehouse18", version="0.1.0")
+app.include_router(users_router)
+app.include_router(locations_router)
+app.include_router(items_router)
+app.include_router(assets_router)
+app.include_router(stock_containers_router)
+app.include_router(inventory_stock_router)
+app.include_router(movement_types_router)
+app.include_router(movements_router)
+
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"ok": True}
+
+
+def _map_db_error(e: Exception) -> HTTPException:
+    # Si viene de SQLAlchemy envuelto como DBAPIError, saca el "orig"
+    orig = e.orig if isinstance(e, DBAPIError) and hasattr(e, "orig") else e
+
+    # SQLSTATE (Postgres): psycopg3 suele exponer .sqlstate, psycopg2 suele exponer .pgcode
+    sqlstate = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+
+    # Check / FK / Unique => 409
+    if sqlstate in ("23514", "23503", "23505"):
+        return HTTPException(status_code=409, detail=str(orig))
+
+    # Muchos RAISE EXCEPTION tuyos caen aquí:
+    low = str(orig).lower()
+    if any(s in low for s in ["not found", "cannot", "not enough", "invalid", "already"]):
+        return HTTPException(status_code=409, detail=str(orig))
+
+    return HTTPException(status_code=500, detail="Internal error")
+
+
+# -------------------------
+# Containers (consumibles)
+# -------------------------
+
+@app.post("/scan/container/receive", response_model=OkOut)
+def receive_container_api(body: ReceiveContainerIn, db: Session = Depends(get_db)):
+    sql = text("SELECT receive_container(:container_code,:item_id,:location_code,:qty,:user_id,:notes);")
+    try:
+        movement_id = db.execute(sql, {
+            "container_code": body.container_code,
+            "item_id": body.item_id,
+            "location_code": body.location_code,
+            "qty": body.qty,
+            "user_id": body.user_id,
+            "notes": body.notes,
+        }).scalar_one()
+        db.commit()
+        return OkOut(movement_id=movement_id)
+    except Exception as e:
+        db.rollback()
+        raise _map_db_error(e)
+
+
+@app.post("/scan/container/consume", response_model=OkOut)
+def consume_container_api(body: ConsumeContainerIn, db: Session = Depends(get_db)):
+    sql = text("SELECT consume_from_container(:container_code,:qty,:user_id,:notes);")
+    try:
+        movement_id = db.execute(sql, {
+            "container_code": body.container_code,
+            "qty": body.qty,
+            "user_id": body.user_id,
+            "notes": body.notes,
+        }).scalar_one()
+        db.commit()
+        return OkOut(movement_id=movement_id)
+    except Exception as e:
+        db.rollback()
+        raise _map_db_error(e)
+
+
+@app.post("/scan/container/transfer", response_model=OkOut)
+def transfer_container_api(body: TransferContainerIn, db: Session = Depends(get_db)):
+    sql = text("SELECT transfer_container(:container_code,:to_location_code,:user_id,:notes);")
+    try:
+        movement_id = db.execute(sql, {
+            "container_code": body.container_code,
+            "to_location_code": body.to_location_code,
+            "user_id": body.user_id,
+            "notes": body.notes,
+        }).scalar_one()
+        db.commit()
+        return OkOut(movement_id=movement_id)
+    except Exception as e:
+        db.rollback()
+        raise _map_db_error(e)
+
+
+# -------------------------
+# Assets (serializados)
+# -------------------------
+
+@app.post("/scan/asset/receive", response_model=OkOut)
+def receive_asset_api(body: ReceiveAssetIn, db: Session = Depends(get_db)):
+    sql = text("SELECT receive_asset(:asset_code,:item_id,:to_location_code,:user_id,:notes,:create_enrichment);")
+    try:
+        movement_id = db.execute(sql, {
+            "asset_code": body.asset_code,
+            "item_id": body.item_id,
+            "to_location_code": body.to_location_code,
+            "user_id": body.user_id,
+            "notes": body.notes,
+            "create_enrichment": body.create_enrichment,
+        }).scalar_one()
+        db.commit()
+        return OkOut(movement_id=movement_id)
+    except Exception as e:
+        db.rollback()
+        raise _map_db_error(e)
+
+
+@app.post("/scan/asset/transfer", response_model=OkOut)
+def transfer_asset_api(body: TransferAssetIn, db: Session = Depends(get_db)):
+    sql = text("SELECT move_asset_to_location(:asset_code,:to_location_code,:user_id,:notes);")
+    try:
+        movement_id = db.execute(sql, {
+            "asset_code": body.asset_code,
+            "to_location_code": body.to_location_code,
+            "user_id": body.user_id,
+            "notes": body.notes,
+        }).scalar_one()
+        db.commit()
+        return OkOut(movement_id=movement_id)
+    except Exception as e:
+        db.rollback()
+        raise _map_db_error(e)
+
+
+@app.post("/scan/asset/issue", response_model=OkOut)
+def issue_asset_api(body: IssueAssetIn, db: Session = Depends(get_db)):
+    sql = text("SELECT issue_asset(:asset_code,:user_id,:notes,:new_status);")
+    try:
+        movement_id = db.execute(sql, {
+            "asset_code": body.asset_code,
+            "user_id": body.user_id,
+            "notes": body.notes,
+            "new_status": body.new_status,
+        }).scalar_one()
+        db.commit()
+        return OkOut(movement_id=movement_id)
+    except Exception as e:
+        db.rollback()
+        raise _map_db_error(e)
+
+
+# -------------------------
+# Read endpoints (para UI)
+# -------------------------
+
+@app.get("/stock")
+def get_stock(db: Session = Depends(get_db)):
+    sql = text("""
+    SELECT i.item_code, i.name, l.code AS location, s.quantity
+    FROM inventory_stock s
+    JOIN items i ON i.id = s.item_id
+    JOIN locations l ON l.id = s.location_id
+    ORDER BY i.name, l.code;
+    """)
+    rows = db.execute(sql).all()
+    return [
+        {"item_code": r[0], "name": r[1], "location": r[2], "quantity": float(r[3])}
+        for r in rows
+    ]
+
+
+@app.get("/movements")
+def get_movements(limit: int = 100, db: Session = Depends(get_db)):
+    sql = text("""
+    SELECT m.id, mt.code, m.created_at, m.quantity, lf.code, lt.code, m.reference_type, m.reference_id, m.notes
+    FROM movements m
+    JOIN movement_types mt ON mt.id = m.movement_type_id
+    LEFT JOIN locations lf ON lf.id = m.from_location_id
+    LEFT JOIN locations lt ON lt.id = m.to_location_id
+    ORDER BY m.id DESC
+    LIMIT :limit;
+    """)
+    rows = db.execute(sql, {"limit": limit}).all()
+
+    return [
+        {
+            "id": r[0],
+            "type": r[1],
+            "at": r[2].isoformat(),
+            "qty": float(r[3]) if r[3] is not None else None,
+            "from": r[4],
+            "to": r[5],
+            "ref_type": r[6],
+            "ref_id": r[7],
+            "notes": r[8],
+        }
+        for r in rows
+    ]

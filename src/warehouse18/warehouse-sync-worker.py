@@ -4,7 +4,9 @@ import time
 import traceback
 from typing import Any, Dict
 
-import psycopg
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.exc import DBAPIError
 
 
 # =========================
@@ -18,6 +20,8 @@ DSN = os.environ.get(
 POLL_SECONDS = 2.0
 MAX_RETRIES = 5            # <- AQUÍ decides cuántas veces reintentar
 BASE_BACKOFF_SECONDS = 5   # <- base del backoff
+
+TZ = "Europe/Madrid"
 
 
 # =========================
@@ -43,30 +47,31 @@ MARK_SENT_SQL = """
 UPDATE integration_outbox
 SET status = 'sent',
     last_attempt_at = now()
-WHERE id = %s;
+WHERE id = :id;
 """
 
+# Nota: hacemos cast a interval para que el bind param funcione siempre
 MARK_RETRY_SQL = """
 UPDATE integration_outbox
 SET status = 'pending',
     retries = retries + 1,
     last_attempt_at = now(),
-    next_retry_at = now() + (%s * (retries + 1))
-WHERE id = %s;
+    next_retry_at = now() + (:base_interval::interval * (retries + 1))
+WHERE id = :id;
 """
 
 MARK_FAILED_SQL = """
 UPDATE integration_outbox
 SET status = 'failed',
     last_attempt_at = now()
-WHERE id = %s;
+WHERE id = :id;
 """
 
 LOG_ERROR_SQL = """
 INSERT INTO error_log (
   severity, source, operation, entity_type, entity_id, message, metadata_json
 )
-VALUES ('error', 'warehouse-sync-worker', 'outbox_send', %s, %s, %s, %s::jsonb);
+VALUES ('error', 'warehouse-sync-worker', 'outbox_send', :entity_type, :entity_id, :message, :metadata_json::jsonb);
 """
 
 
@@ -96,19 +101,48 @@ def send_to_api(
 
 
 # =========================
+# SQLAlchemy setup
+# =========================
+engine = create_engine(
+    DSN,
+    pool_pre_ping=True,
+)
+
+SessionLocal = sessionmaker(
+    bind=engine,
+    autoflush=False,
+    autocommit=False,
+    expire_on_commit=False,
+)
+
+
+# =========================
 # Worker loop
 # =========================
 def main() -> None:
     print("[warehouse-sync-worker] started")
 
+    pick_stmt = text(PICK_SQL)
+    mark_sent_stmt = text(MARK_SENT_SQL)
+    mark_retry_stmt = text(MARK_RETRY_SQL)
+    mark_failed_stmt = text(MARK_FAILED_SQL)
+    log_error_stmt = text(LOG_ERROR_SQL)
+    set_tz_stmt = text(f"SET timezone TO '{TZ}';")
+
+    base_interval = f"{BASE_BACKOFF_SECONDS} seconds"
+
     while True:
         processed_any = False
 
-        with psycopg.connect(DSN) as conn:
-            conn.execute("SET timezone TO 'Europe/Madrid';")
+        # 1 sesión por iteración: bloquea, procesa, commitea o rollback.
+        db = SessionLocal()
+        try:
+            db.execute(set_tz_stmt)
 
-            with conn.transaction():
-                rows = conn.execute(PICK_SQL).fetchall()
+            # Mantiene el mismo comportamiento que tu psycopg:
+            # selecciona + marca sent/retry/failed dentro de la misma transacción.
+            with db.begin():
+                rows = db.execute(pick_stmt).all()
 
                 for (
                     outbox_id,
@@ -129,28 +163,22 @@ def main() -> None:
 
                         send_to_api(entity_type, entity_id, action, payload)
 
-                        conn.execute(MARK_SENT_SQL, (outbox_id,))
-                        print(
-                            f"[warehouse-sync-worker] SENT id={outbox_id} action={action}"
-                        )
+                        db.execute(mark_sent_stmt, {"id": outbox_id})
+                        print(f"[warehouse-sync-worker] SENT id={outbox_id} action={action}")
 
                     except Exception as e:
                         # ⛔ Límite de reintentos alcanzado
                         if retries >= MAX_RETRIES:
-                            conn.execute(MARK_FAILED_SQL, (outbox_id,))
+                            db.execute(mark_failed_stmt, {"id": outbox_id})
                             print(
                                 f"[warehouse-sync-worker] FAILED id={outbox_id} "
                                 f"action={action} retries={retries}"
                             )
-
                         else:
                             # 🔁 Reintento con backoff
-                            conn.execute(
-                                MARK_RETRY_SQL,
-                                (
-                                    f"{BASE_BACKOFF_SECONDS} seconds",
-                                    outbox_id,
-                                ),
+                            db.execute(
+                                mark_retry_stmt,
+                                {"id": outbox_id, "base_interval": base_interval},
                             )
                             print(
                                 f"[warehouse-sync-worker] RETRY id={outbox_id} "
@@ -166,15 +194,23 @@ def main() -> None:
                             "payload": payload_json,
                         }
 
-                        conn.execute(
-                            LOG_ERROR_SQL,
-                            (
-                                entity_type,
-                                entity_id,
-                                str(e)[:500],
-                                json.dumps(meta),
-                            ),
+                        db.execute(
+                            log_error_stmt,
+                            {
+                                "entity_type": entity_type,
+                                "entity_id": entity_id,
+                                "message": str(e)[:500],
+                                "metadata_json": json.dumps(meta),
+                            },
                         )
+
+            # Si no hubo rows, no hace falta esperar dentro del begin.
+        except DBAPIError as e:
+            # SQLAlchemy envuelve errores DB, deja registro simple y sigue.
+            db.rollback()
+            print("[warehouse-sync-worker] DBAPIError:", repr(e))
+        finally:
+            db.close()
 
         if not processed_any:
             time.sleep(POLL_SECONDS)

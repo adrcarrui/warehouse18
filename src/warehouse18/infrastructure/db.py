@@ -1,11 +1,27 @@
-# src/warehouse18_api/db.py
 import os
-import psycopg
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, Session
 
-DSN = os.environ.get("WAREHOUSE18_DSN")  # úsalo como ya hiciste con el worker
+DSN = os.environ.get("WAREHOUSE18_DSN")
 if not DSN:
     raise RuntimeError("WAREHOUSE18_DSN env var is required")
 
-def get_conn():
-    # autocommit False: cada request va en transacción
-    return psycopg.connect(DSN)
+# SQLAlchemy 2.0 style
+engine = create_engine(
+    DSN,
+    pool_pre_ping=True,
+)
+
+SessionLocal = sessionmaker(
+    bind=engine,
+    autoflush=False,
+    autocommit=False,
+    expire_on_commit=False,
+)
+
+def get_db() -> Session:
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
