@@ -1,8 +1,12 @@
 # src/warehouse18_api/schemas.py
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional
 from datetime import datetime
 from decimal import Decimal
+from typing import Generic, List, TypeVar
+
+class ORMBase(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
 
 class ReceiveContainerIn(BaseModel):
     container_code: str
@@ -58,7 +62,7 @@ class UserCreateIn(BaseModel):
     password_hash: Optional[str] = None           # nullable en DB
     auth_provider: str = "local"
 
-class UserOut(BaseModel):
+class UserOut(ORMBase):
     id: int
     username: str
     full_name: str
@@ -95,7 +99,7 @@ class LocationUpdateIn(BaseModel):
     is_active: Optional[bool] = None
 
 
-class LocationOut(BaseModel):
+class LocationOut(ORMBase):
     id: int
     code: str
     name: str
@@ -127,7 +131,7 @@ class ItemUpdateIn(BaseModel):
     item_code: Optional[str] = None
 
 
-class ItemOut(BaseModel):
+class ItemOut(ORMBase):
     id: int
     name: str
     description: Optional[str] = None
@@ -154,7 +158,7 @@ class AssetUpdateIn(BaseModel):
     # opcional: cambiar ubicación actual (si quieres sin usar SP)
     location_id: Optional[int] = None
 
-class AssetOut(BaseModel):
+class AssetOut(ORMBase):
     id: int
     asset_code: str
     item_id: Optional[int] = None
@@ -180,7 +184,7 @@ class StockContainerUpdateIn(BaseModel):
     status: Optional[str] = None
     is_active: Optional[bool] = None
 
-class StockContainerOut(BaseModel):
+class StockContainerOut(ORMBase):
     id: int
     container_code: str
     item_id: int
@@ -191,7 +195,7 @@ class StockContainerOut(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-class InventoryStockOut(BaseModel):
+class InventoryStockOut(ORMBase):
     id: int
     item_id: int
     location_id: int
@@ -222,7 +226,7 @@ class MovementCreateIn(BaseModel):
     notes: Optional[str] = None
 
 
-class MovementOut(BaseModel):
+class MovementOut(ORMBase):
     id: int
     movement_type_id: int
 
@@ -238,3 +242,12 @@ class MovementOut(BaseModel):
     user_id: Optional[int] = None
     created_at: datetime
     notes: Optional[str] = None
+
+T = TypeVar("T")
+
+class PageOut(BaseModel, Generic[T]):
+    items: List[T]
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1)
+    total: int = Field(ge=0)
+    pages: int = Field(ge=0)

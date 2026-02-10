@@ -1,10 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import or_, select
+from datetime import datetime
 
 from warehouse18.infrastructure.db import get_db
 from warehouse18.domain.models import Movement, MovementType, Item, Location, User
-from warehouse18.presentation.api.schemas import MovementCreateIn, MovementOut
+from warehouse18.presentation.api.schemas import MovementCreateIn, MovementOut, PageOut
+
+from warehouse18.presentation.api.paging import paginate
 
 router = APIRouter(prefix="/movements", tags=["movements"])
 
@@ -63,27 +67,71 @@ def create_movement(body: MovementCreateIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=409, detail=str(e.orig))
 
 
-@router.get("/", response_model=list[MovementOut])
+@router.get("/", response_model=PageOut[MovementOut])
 def list_movements(
     db: Session = Depends(get_db),
+    # búsqueda
+    q: str | None = None,
+    # filtros existentes
     movement_type_id: int | None = None,
     item_id: int | None = None,
     from_location_id: int | None = None,
     to_location_id: int | None = None,
     user_id: int | None = None,
+    # filtros extra útiles
+    reference_type: str | None = None,
+    reference_id: int | None = None,
+    from_date: datetime | None = None,
+    to_date: datetime | None = None,
+    # paginación
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
 ):
-    q = db.query(Movement).order_by(Movement.created_at.desc())
+    stmt = select(Movement)
+
     if movement_type_id is not None:
-        q = q.filter(Movement.movement_type_id == movement_type_id)
+        stmt = stmt.where(Movement.movement_type_id == movement_type_id)
     if item_id is not None:
-        q = q.filter(Movement.item_id == item_id)
+        stmt = stmt.where(Movement.item_id == item_id)
     if from_location_id is not None:
-        q = q.filter(Movement.from_location_id == from_location_id)
+        stmt = stmt.where(Movement.from_location_id == from_location_id)
     if to_location_id is not None:
-        q = q.filter(Movement.to_location_id == to_location_id)
+        stmt = stmt.where(Movement.to_location_id == to_location_id)
     if user_id is not None:
-        q = q.filter(Movement.user_id == user_id)
-    return q.all()
+        stmt = stmt.where(Movement.user_id == user_id)
+
+    if reference_type is not None:
+        stmt = stmt.where(Movement.reference_type == reference_type)
+    if reference_id is not None:
+        stmt = stmt.where(Movement.reference_id == reference_id)
+
+    # rango de fechas (asumo Movement.created_at existe, ya lo usas)
+    if from_date is not None:
+        stmt = stmt.where(Movement.created_at >= from_date)
+    if to_date is not None:
+        stmt = stmt.where(Movement.created_at <= to_date)
+
+    if q:
+        like = f"%{q.strip()}%"
+        # q en notes y reference_type (si quieres solo notes, quita reference_type)
+        stmt = stmt.where(
+            or_(
+                Movement.notes.ilike(like),
+                Movement.reference_type.ilike(like),
+            )
+        )
+
+    stmt = stmt.order_by(Movement.created_at.desc())
+
+    items, total, pages = paginate(db, stmt, page=page, page_size=page_size)
+
+    return PageOut[MovementOut](
+        items=items,
+        page=page,
+        page_size=page_size,
+        total=total,
+        pages=pages,
+    )
 
 
 @router.get("/{movement_id}", response_model=MovementOut)

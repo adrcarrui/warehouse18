@@ -1,11 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from warehouse18.infrastructure.db import get_db
 from warehouse18.domain.models import Asset, AssetLocation, Item, Location
-from warehouse18.presentation.api.schemas import AssetCreateIn, AssetUpdateIn, AssetOut
+from warehouse18.presentation.api.schemas import AssetCreateIn, AssetUpdateIn, AssetOut, PageOut
+
+from warehouse18.presentation.api.paging import paginate
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 
@@ -76,20 +78,59 @@ def create_asset(body: AssetCreateIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=409, detail=str(e.orig))
 
 
-@router.get("/", response_model=list[AssetOut])
+@router.get("/", response_model=PageOut[AssetOut])
 def list_assets(
     db: Session = Depends(get_db),
+    q: str | None = None,
     item_id: int | None = None,
     status: str | None = None,
+    location_id: int | None = None,
+    include_inactive: bool = False,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
 ):
-    q = db.query(Asset)
-    if item_id is not None:
-        q = q.filter(Asset.item_id == item_id)
-    if status is not None:
-        q = q.filter(Asset.status == status)
+    # Usamos select() y join a AssetLocation (ubicación actual) para poder filtrar por location_id
+    # y además evitar el N+1 cuando luego hacemos _to_out(a) leyendo a.location
+    stmt = (
+        select(Asset)
+        .outerjoin(AssetLocation, AssetLocation.asset_id == Asset.id)
+    )
 
-    assets = q.order_by(Asset.id.asc()).all()
-    return [_to_out(a) for a in assets]
+    if item_id is not None:
+        stmt = stmt.where(Asset.item_id == item_id)
+
+    if status is not None:
+        stmt = stmt.where(Asset.status == status)
+
+    # Si quieres tratar "inactive" como soft-delete:
+    if not include_inactive:
+        stmt = stmt.where(Asset.status != "inactive")
+
+    if location_id is not None:
+        stmt = stmt.where(AssetLocation.location_id == location_id)
+
+    if q:
+        like = f"%{q.strip()}%"
+        stmt = stmt.where(
+            or_(
+                Asset.asset_code.ilike(like),
+            )
+        )
+
+    stmt = stmt.order_by(Asset.id.asc())
+
+    assets, total, pages = paginate(db, stmt, page=page, page_size=page_size)
+
+    # Convertimos a AssetOut porque lleva location_id/location_since derivados
+    out_items = [_to_out(a) for a in assets]
+
+    return PageOut[AssetOut](
+        items=out_items,
+        page=page,
+        page_size=page_size,
+        total=total,
+        pages=pages,
+    )
 
 
 @router.get("/{asset_id}", response_model=AssetOut)

@@ -1,10 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func, or_, select
 
 from warehouse18.infrastructure.db import get_db
 from warehouse18.domain.models import StockContainer, Item, Location
-from warehouse18.presentation.api.schemas import StockContainerCreateIn, StockContainerOut, StockContainerUpdateIn
+from warehouse18.presentation.api.schemas import StockContainerCreateIn, StockContainerOut, StockContainerUpdateIn, PageOut
+
+from warehouse18.presentation.api.paging import paginate
 
 router = APIRouter(prefix="/stock-containers", tags=["stock_containers"])
 
@@ -37,9 +40,46 @@ def create_stock_container(body: StockContainerCreateIn, db: Session = Depends(g
         db.rollback()
         raise HTTPException(status_code=409, detail=str(e.orig))
 
-@router.get("/", response_model=list[StockContainerOut])
-def list_stock_containers(db: Session = Depends(get_db)):
-    return db.query(StockContainer).order_by(StockContainer.id.asc()).all()
+@router.get("/", response_model=PageOut[StockContainerOut])
+def list_stock_containers(
+    db: Session = Depends(get_db),
+    q: str | None = None,
+    item_id: int | None = None,
+    location_id: int | None = None,
+    include_inactive: bool = False,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+):
+    stmt = select(StockContainer)
+
+    if not include_inactive:
+        stmt = stmt.where(StockContainer.is_active.is_(True))
+
+    if item_id is not None:
+        stmt = stmt.where(StockContainer.item_id == item_id)
+
+    if location_id is not None:
+        stmt = stmt.where(StockContainer.location_id == location_id)
+
+    if q:
+        like = f"%{q.strip()}%"
+        stmt = stmt.where(
+            or_(
+                StockContainer.container_code.ilike(like),
+            )
+        )
+
+    stmt = stmt.order_by(StockContainer.id.asc())
+
+    items, total, pages = paginate(db, stmt, page=page, page_size=page_size)
+
+    return PageOut[StockContainerOut](
+        items=items,
+        page=page,
+        page_size=page_size,
+        total=total,
+        pages=pages,
+    )
 
 @router.get("/{container_id}", response_model=StockContainerOut)
 def get_stock_container(container_id: int, db: Session = Depends(get_db)):

@@ -1,10 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_, select
 from warehouse18.infrastructure.db import get_db
 from warehouse18.domain.models import User
-from warehouse18.presentation.api.schemas import UserCreateIn, UserOut, UserUpdateIn
+from warehouse18.presentation.api.schemas import UserCreateIn, UserOut, UserUpdateIn, PageOut
 from sqlalchemy.exc import IntegrityError
+
+from warehouse18.presentation.api.paging import paginate
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -40,25 +42,49 @@ def create_user(body: UserCreateIn, db: Session = Depends(get_db)):
         updated_at=u.updated_at,
     )
 
-@router.get("/", response_model=list[UserOut])
-def list_users(db: Session = Depends(get_db)):
-    rows = db.query(User).order_by(User.id.asc()).all()
-    return [
-        UserOut(
-            id=u.id,
-            username=u.username,
-            full_name=u.full_name,
-            email=u.email,
-            role=u.role,
-            department=u.department,
-            is_active=u.is_active,
-            auth_provider=u.auth_provider,
-            last_login_at=u.last_login_at,
-            created_at=u.created_at,
-            updated_at=u.updated_at,
+@router.get("/", response_model=PageOut[UserOut])
+def list_users(
+    db: Session = Depends(get_db),
+    q: str | None = None,
+    role: str | None = None,
+    department: str | None = None,
+    is_active: bool | None = True,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+):
+    stmt = select(User)
+
+    # Filtro activo por defecto (pero permite is_active=None para "no filtrar")
+    if is_active is not None:
+        stmt = stmt.where(User.is_active.is_(is_active))
+
+    if role:
+        stmt = stmt.where(User.role == role)
+
+    if department:
+        stmt = stmt.where(User.department == department)
+
+    if q:
+        like = f"%{q.strip()}%"
+        stmt = stmt.where(
+            or_(
+                User.username.ilike(like),
+                User.full_name.ilike(like),
+                User.email.ilike(like),
+            )
         )
-        for u in rows
-    ]
+
+    stmt = stmt.order_by(User.id.asc())
+
+    items, total, pages = paginate(db, stmt, page=page, page_size=page_size)
+
+    return PageOut[UserOut](
+        items=items,
+        page=page,
+        page_size=page_size,
+        total=total,
+        pages=pages,
+    )
 
 @router.patch("/{user_id}", response_model=UserOut)
 def update_user(user_id: int, body: UserUpdateIn, db: Session = Depends(get_db)):

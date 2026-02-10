@@ -1,10 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select, or_
 from sqlalchemy.orm import Session
 
 from warehouse18.infrastructure.db import get_db
 from warehouse18.domain.models import Location
-from warehouse18.presentation.api.schemas import LocationCreateIn, LocationUpdateIn, LocationOut
+from warehouse18.presentation.api.schemas import LocationCreateIn, LocationUpdateIn, LocationOut, PageOut
 from sqlalchemy.exc import IntegrityError
+
+from warehouse18.presentation.api.paging import paginate
 
 router = APIRouter(prefix="/locations", tags=["locations"])
 
@@ -31,9 +34,43 @@ def create_location(body: LocationCreateIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=409, detail=str(e.orig))
 
 
-@router.get("/", response_model=list[LocationOut])
-def list_locations(db: Session = Depends(get_db)):
-    return db.query(Location).order_by(Location.code.asc()).all()
+@router.get("/", response_model=PageOut[LocationOut])
+def list_locations(
+    db: Session = Depends(get_db),
+    q: str | None = None,
+    parent_id: int | None = None,
+    include_inactive: bool = False,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+):
+    stmt = select(Location)
+
+    if not include_inactive:
+        stmt = stmt.where(Location.is_active.is_(True))
+
+    if parent_id is not None:
+        stmt = stmt.where(Location.parent_id == parent_id)
+
+    if q:
+        like = f"%{q.strip()}%"
+        stmt = stmt.where(
+            or_(
+                Location.code.ilike(like),
+                Location.name.ilike(like),
+            )
+        )
+
+    stmt = stmt.order_by(Location.code.asc())
+
+    items, total, pages = paginate(db, stmt, page=page, page_size=page_size)
+
+    return PageOut[LocationOut](
+        items=items,
+        page=page,
+        page_size=page_size,
+        total=total,
+        pages=pages,
+    )
 
 
 @router.get("/{location_id}", response_model=LocationOut)
