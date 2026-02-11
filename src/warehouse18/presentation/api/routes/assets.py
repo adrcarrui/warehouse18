@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -8,6 +8,7 @@ from warehouse18.domain.models import Asset, AssetLocation, Item, Location
 from warehouse18.presentation.api.schemas import AssetCreateIn, AssetUpdateIn, AssetOut, PageOut
 
 from warehouse18.presentation.api.paging import paginate
+from warehouse18.presentation.api.pagination_headers import set_pagination_headers
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 
@@ -80,8 +81,10 @@ def create_asset(body: AssetCreateIn, db: Session = Depends(get_db)):
 
 @router.get("/", response_model=PageOut[AssetOut])
 def list_assets(
+    request: Request,
+    response: Response,
     db: Session = Depends(get_db),
-    q: str | None = None,
+    q: str | None = Query(None, max_length=200),
     item_id: int | None = None,
     status: str | None = None,
     location_id: int | None = None,
@@ -91,10 +94,7 @@ def list_assets(
 ):
     # Usamos select() y join a AssetLocation (ubicación actual) para poder filtrar por location_id
     # y además evitar el N+1 cuando luego hacemos _to_out(a) leyendo a.location
-    stmt = (
-        select(Asset)
-        .outerjoin(AssetLocation, AssetLocation.asset_id == Asset.id)
-    )
+    stmt = select(Asset).outerjoin(AssetLocation, AssetLocation.asset_id == Asset.id)
 
     if item_id is not None:
         stmt = stmt.where(Asset.item_id == item_id)
@@ -117,9 +117,20 @@ def list_assets(
             )
         )
 
+    # Orden estable para paginación
     stmt = stmt.order_by(Asset.id.asc())
 
     assets, total, pages = paginate(db, stmt, page=page, page_size=page_size)
+
+    # Headers útiles de paginación
+    set_pagination_headers(
+        request=request,
+        response=response,
+        page=page,
+        page_size=page_size,
+        total=total,
+        pages=pages,
+    )
 
     # Convertimos a AssetOut porque lleva location_id/location_since derivados
     out_items = [_to_out(a) for a in assets]

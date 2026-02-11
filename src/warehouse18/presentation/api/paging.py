@@ -1,3 +1,4 @@
+from fastapi import HTTPException
 from math import ceil
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
@@ -14,6 +15,8 @@ def paginate(
     total = db.execute(count_stmt).scalar_one()
 
     pages = ceil(total / page_size) if total else 0
+    if total > 0 and page > pages:
+        raise HTTPException(status_code=404, detail="Page out of range")
     offset = (page - 1) * page_size
 
     items = db.execute(stmt.limit(page_size).offset(offset)).scalars().all()

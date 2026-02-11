@@ -1,16 +1,9 @@
-import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 
-DSN = os.environ.get("WAREHOUSE18_DSN")
-if not DSN:
-    raise RuntimeError("WAREHOUSE18_DSN env var is required")
+from warehouse18.config import settings
 
-# SQLAlchemy 2.0 style
-engine = create_engine(
-    DSN,
-    pool_pre_ping=True,
-)
+engine = create_engine(settings.dsn, echo=settings.debug)
 
 SessionLocal = sessionmaker(
     bind=engine,

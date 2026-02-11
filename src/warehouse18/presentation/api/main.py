@@ -1,8 +1,12 @@
+import os
+from fastapi.middleware.cors import CORSMiddleware
+
 from fastapi import FastAPI, HTTPException, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
+from warehouse18.config import settings
 from warehouse18.infrastructure.db import get_db
 from warehouse18.presentation.api.schemas import (
     ReceiveContainerIn, ConsumeContainerIn, TransferContainerIn,
@@ -18,15 +22,31 @@ from warehouse18.presentation.api.routes.inventory_stock import router as invent
 from warehouse18.presentation.api.routes.movement_types import router as movement_types_router
 from warehouse18.presentation.api.routes.movements import router as movements_router
 
-app = FastAPI(title="warehouse18", version="0.1.0")
-app.include_router(users_router)
-app.include_router(locations_router)
-app.include_router(items_router)
-app.include_router(assets_router)
-app.include_router(stock_containers_router)
-app.include_router(inventory_stock_router)
-app.include_router(movement_types_router)
-app.include_router(movements_router)
+app = FastAPI(title="warehouse18", version="0.1.0", docs_url="/api/docs", openapi_url="/api/openapi.json")
+
+cors_origins = os.getenv(
+    "WAREHOUSE18_CORS_ORIGINS",
+    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000",
+).split(",")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in cors_origins if o.strip()],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+API_PREFIX = "/api"
+
+app.include_router(users_router, prefix=API_PREFIX)
+app.include_router(locations_router, prefix=API_PREFIX)
+app.include_router(items_router, prefix=API_PREFIX)
+app.include_router(assets_router, prefix=API_PREFIX)
+app.include_router(stock_containers_router, prefix=API_PREFIX)
+app.include_router(inventory_stock_router, prefix=API_PREFIX)
+app.include_router(movement_types_router, prefix=API_PREFIX)
+app.include_router(movements_router, prefix=API_PREFIX)
 
 
 @app.get("/health")

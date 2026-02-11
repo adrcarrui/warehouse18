@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, select
 from warehouse18.infrastructure.db import get_db
@@ -7,6 +7,7 @@ from warehouse18.presentation.api.schemas import UserCreateIn, UserOut, UserUpda
 from sqlalchemy.exc import IntegrityError
 
 from warehouse18.presentation.api.paging import paginate
+from warehouse18.presentation.api.pagination_headers import set_pagination_headers
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -44,8 +45,10 @@ def create_user(body: UserCreateIn, db: Session = Depends(get_db)):
 
 @router.get("/", response_model=PageOut[UserOut])
 def list_users(
+    request: Request,
+    response: Response,
     db: Session = Depends(get_db),
-    q: str | None = None,
+    q: str | None = Query(None, max_length=200),
     role: str | None = None,
     department: str | None = None,
     is_active: bool | None = True,
@@ -74,9 +77,20 @@ def list_users(
             )
         )
 
+    # Orden estable para paginación
     stmt = stmt.order_by(User.id.asc())
 
     items, total, pages = paginate(db, stmt, page=page, page_size=page_size)
+
+    # Headers útiles
+    set_pagination_headers(
+        request=request,
+        response=response,
+        page=page,
+        page_size=page_size,
+        total=total,
+        pages=pages,
+    )
 
     return PageOut[UserOut](
         items=items,

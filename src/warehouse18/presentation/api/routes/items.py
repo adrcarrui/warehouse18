@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
@@ -8,6 +8,7 @@ from warehouse18.presentation.api.schemas import ItemCreateIn, ItemUpdateIn, Ite
 
 from sqlalchemy import or_, select
 from warehouse18.presentation.api.paging import paginate
+from warehouse18.presentation.api.pagination_headers import set_pagination_headers
 
 router = APIRouter(prefix="/items", tags=["items"])
 
@@ -58,9 +59,11 @@ def create_item(body: ItemCreateIn, db: Session = Depends(get_db)):
 
 @router.get("/", response_model=PageOut[ItemOut])
 def list_items(
+    request: Request,
+    response: Response,
     db: Session = Depends(get_db),
     include_inactive: bool = False,
-    q: str | None = None,
+    q: str | None = Query(None, max_length=200),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
 ):
@@ -81,9 +84,20 @@ def list_items(
             )
         )
 
+    # Orden estable (importantísimo para paginación)
     stmt = stmt.order_by(Item.id.asc())
 
     items, total, pages = paginate(db, stmt, page=page, page_size=page_size)
+
+    # Headers útiles
+    set_pagination_headers(
+        request=request,
+        response=response,
+        page=page,
+        page_size=page_size,
+        total=total,
+        pages=pages,
+    )
 
     return PageOut[ItemOut](
         items=items,
@@ -92,7 +106,6 @@ def list_items(
         total=total,
         pages=pages,
     )
-
 
 @router.get("/{item_id}", response_model=ItemOut)
 def get_item(

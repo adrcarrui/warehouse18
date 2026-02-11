@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import or_, select
@@ -9,6 +9,7 @@ from warehouse18.domain.models import Movement, MovementType, Item, Location, Us
 from warehouse18.presentation.api.schemas import MovementCreateIn, MovementOut, PageOut
 
 from warehouse18.presentation.api.paging import paginate
+from warehouse18.presentation.api.pagination_headers import set_pagination_headers 
 
 router = APIRouter(prefix="/movements", tags=["movements"])
 
@@ -69,9 +70,11 @@ def create_movement(body: MovementCreateIn, db: Session = Depends(get_db)):
 
 @router.get("/", response_model=PageOut[MovementOut])
 def list_movements(
+    request: Request,
+    response: Response,
     db: Session = Depends(get_db),
     # búsqueda
-    q: str | None = None,
+    q: str | None = Query(None, max_length=200),
     # filtros existentes
     movement_type_id: int | None = None,
     item_id: int | None = None,
@@ -79,7 +82,7 @@ def list_movements(
     to_location_id: int | None = None,
     user_id: int | None = None,
     # filtros extra útiles
-    reference_type: str | None = None,
+    reference_type: str | None = Query(None, max_length=50),
     reference_id: int | None = None,
     from_date: datetime | None = None,
     to_date: datetime | None = None,
@@ -105,7 +108,7 @@ def list_movements(
     if reference_id is not None:
         stmt = stmt.where(Movement.reference_id == reference_id)
 
-    # rango de fechas (asumo Movement.created_at existe, ya lo usas)
+    # rango de fechas
     if from_date is not None:
         stmt = stmt.where(Movement.created_at >= from_date)
     if to_date is not None:
@@ -113,7 +116,6 @@ def list_movements(
 
     if q:
         like = f"%{q.strip()}%"
-        # q en notes y reference_type (si quieres solo notes, quita reference_type)
         stmt = stmt.where(
             or_(
                 Movement.notes.ilike(like),
@@ -121,9 +123,20 @@ def list_movements(
             )
         )
 
+    # Orden estable para paginación
     stmt = stmt.order_by(Movement.created_at.desc())
 
     items, total, pages = paginate(db, stmt, page=page, page_size=page_size)
+
+    # Headers útiles de paginación
+    set_pagination_headers(
+        request=request,
+        response=response,
+        page=page,
+        page_size=page_size,
+        total=total,
+        pages=pages,
+    )
 
     return PageOut[MovementOut](
         items=items,
@@ -132,7 +145,6 @@ def list_movements(
         total=total,
         pages=pages,
     )
-
 
 @router.get("/{movement_id}", response_model=MovementOut)
 def get_movement(movement_id: int, db: Session = Depends(get_db)):

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func, or_, select
@@ -8,6 +8,7 @@ from warehouse18.domain.models import StockContainer, Item, Location
 from warehouse18.presentation.api.schemas import StockContainerCreateIn, StockContainerOut, StockContainerUpdateIn, PageOut
 
 from warehouse18.presentation.api.paging import paginate
+from warehouse18.presentation.api.pagination_headers import set_pagination_headers
 
 router = APIRouter(prefix="/stock-containers", tags=["stock_containers"])
 
@@ -42,8 +43,10 @@ def create_stock_container(body: StockContainerCreateIn, db: Session = Depends(g
 
 @router.get("/", response_model=PageOut[StockContainerOut])
 def list_stock_containers(
+    request: Request,
+    response: Response,
     db: Session = Depends(get_db),
-    q: str | None = None,
+    q: str | None = Query(None, max_length=200),
     item_id: int | None = None,
     location_id: int | None = None,
     include_inactive: bool = False,
@@ -69,9 +72,20 @@ def list_stock_containers(
             )
         )
 
+    # Orden estable para paginación
     stmt = stmt.order_by(StockContainer.id.asc())
 
     items, total, pages = paginate(db, stmt, page=page, page_size=page_size)
+
+    # Headers útiles de paginación
+    set_pagination_headers(
+        request=request,
+        response=response,
+        page=page,
+        page_size=page_size,
+        total=total,
+        pages=pages,
+    )
 
     return PageOut[StockContainerOut](
         items=items,

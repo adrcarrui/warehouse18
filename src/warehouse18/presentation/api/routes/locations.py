@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import select, or_
 from sqlalchemy.orm import Session
 
@@ -8,6 +8,7 @@ from warehouse18.presentation.api.schemas import LocationCreateIn, LocationUpdat
 from sqlalchemy.exc import IntegrityError
 
 from warehouse18.presentation.api.paging import paginate
+from warehouse18.presentation.api.pagination_headers import set_pagination_headers
 
 router = APIRouter(prefix="/locations", tags=["locations"])
 
@@ -36,8 +37,10 @@ def create_location(body: LocationCreateIn, db: Session = Depends(get_db)):
 
 @router.get("/", response_model=PageOut[LocationOut])
 def list_locations(
+    request: Request,
+    response: Response,
     db: Session = Depends(get_db),
-    q: str | None = None,
+    q: str | None = Query(None, max_length=200),
     parent_id: int | None = None,
     include_inactive: bool = False,
     page: int = Query(1, ge=1),
@@ -60,9 +63,20 @@ def list_locations(
             )
         )
 
+    # Orden estable para paginación
     stmt = stmt.order_by(Location.code.asc())
 
     items, total, pages = paginate(db, stmt, page=page, page_size=page_size)
+
+    # Headers útiles
+    set_pagination_headers(
+        request=request,
+        response=response,
+        page=page,
+        page_size=page_size,
+        total=total,
+        pages=pages,
+    )
 
     return PageOut[LocationOut](
         items=items,
