@@ -60,3 +60,6 @@ Thumbs.db
 node_modules/
 dist/
 .vite/
+
+#DB dumps
+*.sql
