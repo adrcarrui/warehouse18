@@ -63,3 +63,9 @@ dist/
 
 #DB dumps
 *.sql
+!warehouse18_schema.sql
+
+# Accidental archives
+*.zip
+*.rar
+*.7z
