@@ -1,12 +1,16 @@
-# src/warehouse18_api/schemas.py
-from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional
+from __future__ import annotations
+
 from datetime import datetime
 from decimal import Decimal
-from typing import Generic, List, TypeVar
+from typing import Generic, TypeVar, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
 
 class ORMBase(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(
+        from_attributes=True,
+        ser_json_exclude_none=True,
+        )
 
 class ReceiveContainerIn(BaseModel):
     container_code: str
@@ -48,7 +52,7 @@ class IssueAssetIn(BaseModel):
     notes: Optional[str] = None
     new_status: str = "inactive"
 
-class OkOut(BaseModel):
+class OkOut(ORMBase):
     ok: bool = True
     movement_id: int
 
@@ -130,7 +134,6 @@ class ItemUpdateIn(BaseModel):
     is_active: Optional[bool] = None
     item_code: Optional[str] = None
 
-
 class ItemOut(ORMBase):
     id: int
     name: str
@@ -202,7 +205,7 @@ class InventoryStockOut(ORMBase):
     quantity: Decimal
     updated_at: datetime
 
-class MovementTypeOut(BaseModel):
+class MovementTypeOut(ORMBase):
     id: int
     code: str
     name: str
@@ -246,7 +249,9 @@ class MovementOut(ORMBase):
 T = TypeVar("T")
 
 class PageOut(BaseModel, Generic[T]):
-    items: List[T]
+    model_config = ConfigDict(ser_json_exclude_none=True) 
+
+    items: list[T]
     page: int = Field(ge=1)
     page_size: int = Field(ge=1)
     total: int = Field(ge=0)

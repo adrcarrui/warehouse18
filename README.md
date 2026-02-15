@@ -168,3 +168,17 @@ red caida, APIs lentas, usuarios humanos y procesos imperfectos.
 
 Si algo parece “más complejo de lo normal”, probablemente es porque evita
 un problema que ya ha ocurrido en producción alguna vez.
+
+## 🚀 Quickstart (dev)
+
+### Backend
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python -m pip install --upgrade pip
+.\.venv\Scripts\python -m pip install -e .
+
+# Config
+copy .env.example .env
+# Edita WAREHOUSE18_DSN si hace falta
+
+.\.venv\Scripts\python -m uvicorn warehouse18.presentation.api.main:app --reload

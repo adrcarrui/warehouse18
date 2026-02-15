@@ -1,9 +1,10 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
+from typing import Iterator
 
 from warehouse18.config import settings
 
-engine = create_engine(settings.dsn, echo=settings.debug)
+engine = create_engine(settings.dsn, echo=settings.sql_echo)
 
 SessionLocal = sessionmaker(
     bind=engine,
@@ -12,7 +13,7 @@ SessionLocal = sessionmaker(
     expire_on_commit=False,
 )
 
-def get_db() -> Session:
+def get_db() -> Iterator[Session]:
     db = SessionLocal()
     try:
         yield db

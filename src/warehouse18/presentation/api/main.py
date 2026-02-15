@@ -1,4 +1,3 @@
-import os
 from fastapi.middleware.cors import CORSMiddleware
 
 from fastapi import FastAPI, HTTPException, Depends
@@ -22,34 +21,34 @@ from warehouse18.presentation.api.routes.inventory_stock import router as invent
 from warehouse18.presentation.api.routes.movement_types import router as movement_types_router
 from warehouse18.presentation.api.routes.movements import router as movements_router
 
-app = FastAPI(title="warehouse18", version="0.1.0", docs_url="/api/docs", openapi_url="/api/openapi.json")
-
-cors_origins = os.getenv(
-    "WAREHOUSE18_CORS_ORIGINS",
-    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000",
-).split(",")
+app = FastAPI(
+    title="Warehouse18 API",
+    root_path=settings.root_path,
+    docs_url=f"{settings.api_prefix}/docs",
+    openapi_url=f"{settings.api_prefix}/openapi.json",
+    debug=settings.debug,
+    
+)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in cors_origins if o.strip()],
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-API_PREFIX = "/api"
-
-app.include_router(users_router, prefix=API_PREFIX)
-app.include_router(locations_router, prefix=API_PREFIX)
-app.include_router(items_router, prefix=API_PREFIX)
-app.include_router(assets_router, prefix=API_PREFIX)
-app.include_router(stock_containers_router, prefix=API_PREFIX)
-app.include_router(inventory_stock_router, prefix=API_PREFIX)
-app.include_router(movement_types_router, prefix=API_PREFIX)
-app.include_router(movements_router, prefix=API_PREFIX)
+app.include_router(users_router, prefix=settings.api_prefix)
+app.include_router(locations_router, prefix=settings.api_prefix)
+app.include_router(items_router, prefix=settings.api_prefix)
+app.include_router(assets_router, prefix=settings.api_prefix)
+app.include_router(stock_containers_router, prefix=settings.api_prefix)
+app.include_router(inventory_stock_router, prefix=settings.api_prefix)
+app.include_router(movement_types_router, prefix=settings.api_prefix)
+app.include_router(movements_router, prefix=settings.api_prefix)
 
 
-@app.get("/health")
+@app.get(f"{settings.api_prefix}/health")
 def health():
     return {"ok": True}
 
@@ -77,7 +76,7 @@ def _map_db_error(e: Exception) -> HTTPException:
 # Containers (consumibles)
 # -------------------------
 
-@app.post("/scan/container/receive", response_model=OkOut)
+@app.post(f"{settings.api_prefix}/scan/container/receive", response_model=OkOut)
 def receive_container_api(body: ReceiveContainerIn, db: Session = Depends(get_db)):
     sql = text("SELECT receive_container(:container_code,:item_id,:location_code,:qty,:user_id,:notes);")
     try:
@@ -96,7 +95,7 @@ def receive_container_api(body: ReceiveContainerIn, db: Session = Depends(get_db
         raise _map_db_error(e)
 
 
-@app.post("/scan/container/consume", response_model=OkOut)
+@app.post(f"{settings.api_prefix}/scan/container/consume", response_model=OkOut)
 def consume_container_api(body: ConsumeContainerIn, db: Session = Depends(get_db)):
     sql = text("SELECT consume_from_container(:container_code,:qty,:user_id,:notes);")
     try:
@@ -113,7 +112,7 @@ def consume_container_api(body: ConsumeContainerIn, db: Session = Depends(get_db
         raise _map_db_error(e)
 
 
-@app.post("/scan/container/transfer", response_model=OkOut)
+@app.post(f"{settings.api_prefix}/scan/container/transfer", response_model=OkOut)
 def transfer_container_api(body: TransferContainerIn, db: Session = Depends(get_db)):
     sql = text("SELECT transfer_container(:container_code,:to_location_code,:user_id,:notes);")
     try:
@@ -134,7 +133,7 @@ def transfer_container_api(body: TransferContainerIn, db: Session = Depends(get_
 # Assets (serializados)
 # -------------------------
 
-@app.post("/scan/asset/receive", response_model=OkOut)
+@app.post(f"{settings.api_prefix}/scan/asset/receive", response_model=OkOut)
 def receive_asset_api(body: ReceiveAssetIn, db: Session = Depends(get_db)):
     sql = text("SELECT receive_asset(:asset_code,:item_id,:to_location_code,:user_id,:notes,:create_enrichment);")
     try:
@@ -153,7 +152,7 @@ def receive_asset_api(body: ReceiveAssetIn, db: Session = Depends(get_db)):
         raise _map_db_error(e)
 
 
-@app.post("/scan/asset/transfer", response_model=OkOut)
+@app.post(f"{settings.api_prefix}/scan/asset/transfer", response_model=OkOut)
 def transfer_asset_api(body: TransferAssetIn, db: Session = Depends(get_db)):
     sql = text("SELECT move_asset_to_location(:asset_code,:to_location_code,:user_id,:notes);")
     try:
@@ -170,7 +169,7 @@ def transfer_asset_api(body: TransferAssetIn, db: Session = Depends(get_db)):
         raise _map_db_error(e)
 
 
-@app.post("/scan/asset/issue", response_model=OkOut)
+@app.post(f"{settings.api_prefix}/scan/asset/issue", response_model=OkOut)
 def issue_asset_api(body: IssueAssetIn, db: Session = Depends(get_db)):
     sql = text("SELECT issue_asset(:asset_code,:user_id,:notes,:new_status);")
     try:
@@ -185,52 +184,3 @@ def issue_asset_api(body: IssueAssetIn, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         raise _map_db_error(e)
-
-
-# -------------------------
-# Read endpoints (para UI)
-# -------------------------
-
-@app.get("/stock")
-def get_stock(db: Session = Depends(get_db)):
-    sql = text("""
-    SELECT i.item_code, i.name, l.code AS location, s.quantity
-    FROM inventory_stock s
-    JOIN items i ON i.id = s.item_id
-    JOIN locations l ON l.id = s.location_id
-    ORDER BY i.name, l.code;
-    """)
-    rows = db.execute(sql).all()
-    return [
-        {"item_code": r[0], "name": r[1], "location": r[2], "quantity": float(r[3])}
-        for r in rows
-    ]
-
-
-@app.get("/movements")
-def get_movements(limit: int = 100, db: Session = Depends(get_db)):
-    sql = text("""
-    SELECT m.id, mt.code, m.created_at, m.quantity, lf.code, lt.code, m.reference_type, m.reference_id, m.notes
-    FROM movements m
-    JOIN movement_types mt ON mt.id = m.movement_type_id
-    LEFT JOIN locations lf ON lf.id = m.from_location_id
-    LEFT JOIN locations lt ON lt.id = m.to_location_id
-    ORDER BY m.id DESC
-    LIMIT :limit;
-    """)
-    rows = db.execute(sql, {"limit": limit}).all()
-
-    return [
-        {
-            "id": r[0],
-            "type": r[1],
-            "at": r[2].isoformat(),
-            "qty": float(r[3]) if r[3] is not None else None,
-            "from": r[4],
-            "to": r[5],
-            "ref_type": r[6],
-            "ref_id": r[7],
-            "notes": r[8],
-        }
-        for r in rows
-    ]

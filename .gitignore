@@ -1,16 +1,62 @@
+# Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
 *.pyd
+*.so
 .pytest_cache/
-.ruff_cache/
 .mypy_cache/
+.ruff_cache/
 
+# Virtual env
 .venv/
-.env
+venv/
+ENV/
+env/
 
+# Env (keep example)
+.env
+.env.*
+!.env.example
+
+# IDEs
+.vscode/
+.idea/
+*.iml
+
+# Logs
+*.log
+
+# DB backups / dumps
+backup_warehouse18_*.sql
+*.dump
+*.backup
+*.tar
+
+# Frontend
+frontend/**/node_modules/
+frontend/**/dist/
+frontend/**/.vite/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+# Logs
+*.log
+
+# DB dumps / backups
+backup_warehouse18_*.sql
+*.dump
+*.backup
+*.tar
+
+# OS / IDE
+.DS_Store
+Thumbs.db
 .vscode/
 .idea/
 
-*.log
-.DS_Store
+# Frontend (si está en este repo en algún momento)
+node_modules/
+dist/
+.vite/
