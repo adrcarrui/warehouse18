@@ -1,11 +1,12 @@
 # Python
 __pycache__/
 *.py[cod]
-*.pyd
-*.so
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+*.egg-info/
+dist/
+build/
 
 # Virtual env
 .venv/
@@ -13,59 +14,38 @@ venv/
 ENV/
 env/
 
-# Env (keep example)
+# Env files
 .env
 .env.*
 !.env.example
 
-# IDEs
+# IDE/OS
 .vscode/
 .idea/
 *.iml
+.DS_Store
+Thumbs.db
 
 # Logs
 *.log
 
-# DB backups / dumps
+# DB dumps/backups (pero mantenemos el schema)
 backup_warehouse18_*.sql
 *.dump
 *.backup
 *.tar
+*.sql
+!warehouse18_schema.sql
 
 # Frontend
+node_modules/
+dist/
+.vite/
 frontend/**/node_modules/
 frontend/**/dist/
 frontend/**/.vite/
 
-# Build artifacts
-dist/
-build/
-*.egg-info/
-# Logs
-*.log
-
-# DB dumps / backups
-backup_warehouse18_*.sql
-*.dump
-*.backup
-*.tar
-
-# OS / IDE
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
-
-# Frontend (si está en este repo en algún momento)
-node_modules/
-dist/
-.vite/
-
-#DB dumps
-*.sql
-!warehouse18_schema.sql
-
-# Accidental archives
+# Archives
 *.zip
 *.rar
 *.7z
