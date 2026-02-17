@@ -44,7 +44,7 @@ class RFIDReaderTCP:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(self.cfg.connect_timeout)
         s.connect((self.cfg.host, self.cfg.port))
-        s.settimeout(1.0)  # timeout lectura
+        s.settimeout(1.0)  # timeout lectura para no quedarnos colgados
         self._sock = s
 
 
@@ -66,7 +66,10 @@ class RFIDReaderTCP:
         if not self._sock:
             raise RuntimeError("RFIDReaderTCP no está conectado")
         while True:
-            chunk = self._sock.recv(self.cfg.recv_size)
+            try:
+                chunk = self._sock.recv(self.cfg.recv_size)
+            except socket.timeout:
+                raise TimeoutError("Timeout esperando datos del lector")
             if not chunk:
                 raise ConnectionError("Socket cerrado por el lector")
             yield chunk
