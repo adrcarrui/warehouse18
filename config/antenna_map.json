@@ -11,7 +11,7 @@
         {
           "port": 0,
           "logical_name": "ENTRADA_PUERTA",
-          "location_id": 6,
+          "location_id": 5,
           "direction": "IN",
           "is_active": true,
           "notes": "Puerta principal, lado interior"
