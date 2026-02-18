@@ -12,6 +12,12 @@ from warehouse18.presentation.api.pagination_headers import set_pagination_heade
 
 router = APIRouter(prefix="/stock-containers", tags=["stock_containers"])
 
+def normalize_container_code(v: str | None) -> str | None:
+    if v is None:
+        return None
+    s = v.strip().upper()
+    return s or None
+
 @router.post("/", response_model=StockContainerOut)
 def create_stock_container(body: StockContainerCreateIn, db: Session = Depends(get_db)):
     # validar item existe y NO serializado
@@ -26,13 +32,17 @@ def create_stock_container(body: StockContainerCreateIn, db: Session = Depends(g
     if not loc:
         raise HTTPException(status_code=409, detail="Location not found")
 
-    if body.container_code:
-        exists = db.query(StockContainer).filter(StockContainer.container_code == body.container_code).first()
+    cc = normalize_container_code(body.container_code)
+
+    if cc:
+        exists = db.query(StockContainer).filter(StockContainer.container_code == cc).first()
         if exists:
             raise HTTPException(status_code=409, detail="container_code already exists")
 
     try:
-        sc = StockContainer(**body.model_dump())
+        payload = body.model_dump()
+        payload["container_code"] = cc
+        sc = StockContainer(**payload)
         db.add(sc)
         db.commit()
         db.refresh(sc)
@@ -115,13 +125,18 @@ def update_stock_container(container_id: int, body: StockContainerUpdateIn, db: 
         if not loc:
             raise HTTPException(status_code=409, detail="Location not found")
 
-    if "container_code" in data and data["container_code"]:
-        exists = db.query(StockContainer).filter(
-            StockContainer.container_code == data["container_code"],
-            StockContainer.id != container_id
-        ).first()
-        if exists:
-            raise HTTPException(status_code=409, detail="container_code already exists")
+    # Normaliza container_code si viene en el PATCH (y permite borrar con null)
+    if "container_code" in data:
+        data["container_code"] = normalize_container_code(data["container_code"])
+
+        cc = data["container_code"]
+        if cc:
+            exists = db.query(StockContainer).filter(
+                StockContainer.container_code == cc,
+                StockContainer.id != container_id
+            ).first()
+            if exists:
+                raise HTTPException(status_code=409, detail="container_code already exists")
 
     try:
         for k, v in data.items():
@@ -147,3 +162,4 @@ def delete_stock_container(container_id: int, db: Session = Depends(get_db)):
     except IntegrityError as e:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(e.orig))
+    

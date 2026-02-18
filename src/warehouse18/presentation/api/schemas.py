@@ -256,3 +256,9 @@ class PageOut(BaseModel, Generic[T]):
     page_size: int = Field(ge=1)
     total: int = Field(ge=0)
     pages: int = Field(ge=0)
+
+class RfidIngestIn(BaseModel):
+    epc: str
+    antenna: int
+    rssi: Optional[int] = None
+    ts: Optional[str] = None  

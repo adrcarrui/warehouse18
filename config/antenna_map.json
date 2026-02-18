@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "updated_at": "2026-02-18",
+  "readers": [
+    {
+      "name": "Reader-ALM18-01",
+      "model": "R2000",
+      "ip": "127.0.0.1",
+      "tcp_port": 0,
+      "ports": [
+        {
+          "port": 0,
+          "logical_name": "ENTRADA_PUERTA",
+          "location_id": 6,
+          "direction": "IN",
+          "is_active": true,
+          "notes": "Puerta principal, lado interior"
+        },
+        {
+          "port": 1,
+          "logical_name": "PASO_CONTROL_1",
+          "location_id": 2,
+          "direction": "BOTH",
+          "is_active": true,
+          "notes": "Zona de paso/pruebas"
+        },
+        {
+          "port": 2,
+          "logical_name": "TBD",
+          "location_id": null,
+          "direction": "BOTH",
+          "is_active": false,
+          "notes": "Pendiente de instalación"
+        },
+        {
+          "port": 3,
+          "logical_name": "TBD",
+          "location_id": null,
+          "direction": "BOTH",
+          "is_active": false,
+          "notes": "Pendiente de instalación"
+        }
+      ]
+    }
+  ]
+}

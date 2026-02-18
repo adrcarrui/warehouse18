@@ -23,6 +23,17 @@ function getNumberHeader(h: Headers, name: string, fallback: number) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+async function readError(res: Response): Promise<string> {
+  let msg = `${res.status} ${res.statusText}`;
+  try {
+    const j = await res.json();
+    if (j?.detail) msg = j.detail;
+  } catch {
+    // ignore
+  }
+  return msg;
+}
+
 export async function apiGet<T>(
   path: string,
   params?: Record<string, string | number | boolean | null | undefined>
@@ -60,4 +71,76 @@ export async function apiGet<T>(
   };
 
   return { data, meta };
+}
+
+export async function apiJson<T>(
+  method: "POST" | "PATCH" | "PUT" | "DELETE",
+  path: string,
+  body?: unknown
+): Promise<T> {
+  const url = new URL(path, window.location.origin);
+
+  const res = await fetch(url.toString(), {
+    method,
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
+  if (!res.ok) throw new Error(await readError(res));
+
+  // DELETE puede devolver vacío según implementaciones futuras
+  const text = await res.text();
+  return (text ? JSON.parse(text) : ({} as T)) as T;
+}
+
+
+
+export async function apiSend<TOut>(
+  method: "POST" | "PATCH" | "DELETE",
+  path: string,
+  body?: any
+): Promise<TOut> {
+  const url = new URL(path, window.location.origin);
+
+  const res = await fetch(url.toString(), {
+    method,
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try {
+      const j = await res.json();
+      if (j?.detail) msg = j.detail;
+    } catch {}
+    throw new Error(msg);
+  }
+
+  // DELETE a veces devuelve vacío, tu API devuelve {"status":"ok"} pero por si acaso:
+  if (res.status === 204) return undefined as unknown as TOut;
+
+  try {
+    return (await res.json()) as TOut;
+  } catch {
+    return undefined as unknown as TOut;
+  }
+}
+
+export function apiPost<TOut>(path: string, body: any) {
+  return apiSend<TOut>("POST", path, body);
+}
+
+export function apiPatch<TOut>(path: string, body: any) {
+  return apiSend<TOut>("PATCH", path, body);
+}
+
+export function apiDelete<TOut>(path: string) {
+  return apiSend<TOut>("DELETE", path);
 }

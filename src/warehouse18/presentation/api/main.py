@@ -12,6 +12,12 @@ from warehouse18.presentation.api.schemas import (
     ReceiveAssetIn, TransferAssetIn, IssueAssetIn,
     OkOut
 )
+
+from warehouse18.infrastructure.config.antenna_map import (
+    load_antenna_map,
+    resolve_antenna_map_path,
+)
+
 from warehouse18.presentation.api.routes.users import router as users_router
 from warehouse18.presentation.api.routes.locations import router as locations_router
 from warehouse18.presentation.api.routes.items import router as items_router
@@ -20,6 +26,8 @@ from warehouse18.presentation.api.routes.stock_containers import router as stock
 from warehouse18.presentation.api.routes.inventory_stock import router as inventory_stock_router
 from warehouse18.presentation.api.routes.movement_types import router as movement_types_router
 from warehouse18.presentation.api.routes.movements import router as movements_router
+from warehouse18.presentation.api.routes.rfid_events import router as rfid_events_router
+from warehouse18.presentation.api.routes.rfid_ingest import router as rfid_ingest_router
 
 app = FastAPI(
     title="Warehouse18 API",
@@ -46,7 +54,15 @@ app.include_router(stock_containers_router, prefix=settings.api_prefix)
 app.include_router(inventory_stock_router, prefix=settings.api_prefix)
 app.include_router(movement_types_router, prefix=settings.api_prefix)
 app.include_router(movements_router, prefix=settings.api_prefix)
+app.include_router(rfid_events_router, prefix=settings.api_prefix)
+app.include_router(rfid_ingest_router, prefix=settings.api_prefix)
 
+@app.on_event("startup")
+def _load_antenna_map_on_startup():
+    path = resolve_antenna_map_path()
+    m = load_antenna_map(path)
+    app.state.antenna_map = m
+    print(f"[antenna_map] loaded reader={m.reader_name} ports={sorted(m.ports.keys())} from {path}")
 
 @app.get(f"{settings.api_prefix}/health")
 def health():
