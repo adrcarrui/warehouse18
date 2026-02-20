@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AppShell } from "../app/AppShell";
 
 type RfidEvent = {
   ts?: string;
@@ -90,6 +91,7 @@ export default function RFIDMonitorPage() {
   }, [events, epcFilter, typeFilter, antennaFilter]);
 
   return (
+    <AppShell title="RFID Monitor" subtitle="Live stream of RFID events from the readers">
     <div style={{ padding: 16, fontFamily: "system-ui" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
         <h2 style={{ marginTop: 0, marginBottom: 0 }}>RFID Monitor</h2>
@@ -166,5 +168,6 @@ export default function RFIDMonitorPage() {
         Nota: esto es monitor en vivo. La trazabilidad real vive en Movements/DB.
       </div>
     </div>
+    </AppShell>
   );
 }

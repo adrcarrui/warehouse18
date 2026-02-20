@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiGet, apiJson } from "../api";
 import type { PageMeta, PageOut } from "../api";
+import { AppShell } from "../app/AppShell";
 
 type UserOut = {
   id: number;
@@ -222,6 +223,7 @@ export default function UsersPage() {
   }
 
   return (
+    <AppShell title="Users" subtitle= "Manage access and roles">
     <div style={{ padding: 16, fontFamily: "system-ui" }}>
       <h2 style={{ marginTop: 0 }}>Users</h2>
 
@@ -488,5 +490,6 @@ export default function UsersPage() {
         </button>
       </div>
     </div>
+    </AppShell>
   );
 }

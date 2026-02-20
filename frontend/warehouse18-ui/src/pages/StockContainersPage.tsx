@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost, apiPatch, apiDelete } from "../api";
 import type { PageMeta, PageOut } from "../api";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { AppShell } from "../app/AppShell";
 
 type StockContainerOut = {
   id: number;
@@ -280,6 +281,7 @@ export default function StockContainersPage() {
   }
 
   return (
+    <AppShell title="Stock Containers" subtitle="Manage inventory containers and their contents">
     <div style={{ padding: 16, fontFamily: "system-ui" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
         <h2 style={{ marginTop: 0, marginBottom: 0 }}>Stock Containers</h2>
@@ -438,5 +440,6 @@ export default function StockContainersPage() {
         </div>
       )}
     </div>
+    </AppShell>
   );
 }

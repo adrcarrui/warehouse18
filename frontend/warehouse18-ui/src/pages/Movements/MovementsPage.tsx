@@ -82,9 +82,6 @@ export function MovementsPage() {
               </Button>
             </div>
           </div>
-<div className="bg-red-500 text-white p-6 rounded-2xl">
-  Tailwind test
-</div>
 
           <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div className="w-full md:max-w-md">

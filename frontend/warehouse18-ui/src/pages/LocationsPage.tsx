@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiDelete, apiGet, apiPatch, apiPost } from "../api";
 import type { PageMeta, PageOut } from "../api";
+import { AppShell } from "../app/AppShell";
 
 type LocationOut = {
   id: number;
@@ -186,6 +187,7 @@ export default function LocationsPage() {
   }
 
   return (
+    <AppShell title="Locations" subtitle="Manage locations">
     <div style={{ padding: 16, fontFamily: "system-ui" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
         <h2 style={{ marginTop: 0, marginBottom: 0 }}>Locations</h2>
@@ -367,5 +369,6 @@ export default function LocationsPage() {
         </div>
       )}
     </div>
+    </AppShell>
   );
 }

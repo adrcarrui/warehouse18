@@ -1,4 +1,4 @@
-import { ReactNode } from "react";
+import { ReactNode, useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import {
   LayoutDashboard,
@@ -7,10 +7,18 @@ import {
   MapPin,
   Users,
   Settings,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { cn } from "../lib/cn";
 
-const nav = [
+type NavItem = {
+  label: string;
+  href: string;
+  icon: React.ComponentType<{ className?: string }>;
+};
+
+const NAV: NavItem[] = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
   { label: "Items", href: "/items", icon: Package },
   { label: "Movements", href: "/movements", icon: ArrowLeftRight },
@@ -19,6 +27,8 @@ const nav = [
   { label: "Settings", href: "/settings", icon: Settings },
 ];
 
+const STORAGE_KEY = "warehouse18.sidebarCollapsed";
+
 export function AppShell(props: {
   title: string;
   subtitle?: string;
@@ -26,111 +36,133 @@ export function AppShell(props: {
   children: ReactNode;
 }) {
   const { title, subtitle, actions, children } = props;
-  const loc = useLocation();
+  const location = useLocation();
+
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(STORAGE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, collapsed ? "1" : "0");
+    } catch {
+      // si falla, pues nada, el mundo sigue girando
+    }
+  }, [collapsed]);
+
+  const activeHref = useMemo(() => location.pathname, [location.pathname]);
 
   return (
-    <div className="min-h-screen bg-zinc-50 text-zinc-900">
-      <div className="mx-auto flex min-h-screen max-w-[1440px]">
+    <div className="min-h-screen bg-slate-950 text-slate-100">
+      <div className="flex">
         {/* Sidebar */}
-        <aside className="hidden w-72 shrink-0 border-r border-zinc-200/70 bg-zinc-50/60 md:flex md:flex-col">
-          <div className="px-4 pt-4">
-            <div className="rounded-2xl bg-white px-4 py-3 shadow-sm ring-1 ring-zinc-200/60">
-              <div className="flex items-center gap-3">
-                <div className="h-9 w-9 rounded-2xl bg-zinc-900" />
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-semibold leading-tight">
-                    Warehouse18
-                  </div>
-                  <div className="truncate text-xs text-zinc-500">
-                    RFID / Inventory
-                  </div>
-                </div>
+        <aside
+          className={cn(
+            "sticky top-0 h-screen border-r border-blue-900 bg-[var(--blue-bg)] backdrop-blur",
+             //",
+            "transition-all duration-200",
+            collapsed ? "w-[100px]" : "w-[260px]"
+          )}
+        >
+          {/* Brand */}
+          <div className="flex h-14 items-center justify-between px-3">
+            <Link to="/" className="flex items-center gap-2 overflow-hidden">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-800 bg-slate-900/40">
+                <span className="text-xs font-bold text-slate-200">W18</span>
               </div>
-            </div>
+              {!collapsed && (
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold">Warehouse18</div>
+                  <div className="truncate text-[11px] text-slate-500">RFID Inventory</div>
+                </div>
+              )}
+            </Link>
+
+            <button
+              type="button"
+              onClick={() => setCollapsed((v) => !v)}
+              className={cn(
+                "inline-flex h-9 w-9 items-center justify-center rounded-xl",
+                "border border-slate-800 bg-slate-900/30",
+                "hover:border-slate-700 hover:bg-slate-900/60 transition"
+              )}
+              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+              title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            >
+              {collapsed ? (
+                <ChevronRight className="h-4 w-4 text-slate-300" />
+              ) : (
+                <ChevronLeft className="h-4 w-4 text-slate-300" />
+              )}
+            </button>
           </div>
 
-          <nav className="mt-4 px-3">
+          {/* Nav */}
+          <nav className="px-2 py-2">
             <div className="space-y-1">
-              {nav.map((item) => {
-                const active = loc.pathname === item.href;
-                const Icon = item.icon;
+              {NAV.map((it) => {
+                const active =
+                  it.href === "/"
+                    ? activeHref === "/"
+                    : activeHref.startsWith(it.href);
+
+                const Icon = it.icon;
 
                 return (
                   <Link
-                    key={item.href}
-                    to={item.href}
+                    key={it.href}
+                    to={it.href}
                     className={cn(
-                      "group flex items-center gap-3 rounded-xl px-3 py-2 text-sm transition-colors",
-                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-300 focus-visible:ring-offset-2 ring-offset-zinc-50",
+                      "group flex items-center gap-3 rounded-xl px-3 py-2",
+                      "border border-transparent transition",
                       active
-                        ? "bg-white text-zinc-900 shadow-sm ring-1 ring-zinc-200/70"
-                        : "text-zinc-700 hover:bg-white/70 hover:text-zinc-900"
+                        ? "bg-slate-900/50 border-slate-800"
+                        : "hover:bg-slate-900/30 hover:border-slate-800"
                     )}
+                    title={collapsed ? it.label : undefined}
                   >
-                    <Icon
+                    <Icon className={cn("h-5 w-5", active ? "text-slate-100" : "text-slate-400 group-hover:text-slate-200")} />
+                    {!collapsed && (
+                      <span className={cn("text-sm", active ? "text-slate-100" : "text-slate-300")}>
+                        {it.label}
+                      </span>
+                    )}
+                    {/* Active indicator */}
+                    <span
                       className={cn(
-                        "h-4 w-4",
-                        active
-                          ? "text-zinc-900"
-                          : "text-zinc-500 group-hover:text-zinc-700"
+                        "ml-auto h-2 w-2 rounded-full",
+                        active ? "bg-blue-500" : "bg-transparent"
                       )}
                     />
-                    <span className="font-medium">{item.label}</span>
                   </Link>
                 );
               })}
             </div>
           </nav>
-
-          <div className="mt-auto px-4 pb-4">
-            <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-zinc-200/60">
-              <div className="text-xs font-semibold text-zinc-700">Status</div>
-              <div className="mt-1 flex items-center justify-between">
-                <div className="text-xs text-zinc-600">Local dev</div>
-                <span className="inline-flex h-2 w-2 rounded-full bg-green-500" />
-              </div>
-              <div className="mt-3 h-px bg-zinc-100" />
-              <div className="mt-3 text-xs text-zinc-500">
-                Minimal UI, maximum pain.
-              </div>
-            </div>
-          </div>
         </aside>
 
         {/* Main */}
-        <div className="flex min-w-0 flex-1 flex-col">
+        <main className="flex-1">
           {/* Header */}
-          <header className="sticky top-0 z-20 bg-zinc-50/80 backdrop-blur">
-            <div className="px-4 pt-4 md:px-6">
-              <div className="rounded-2xl bg-white px-4 py-3 shadow-sm ring-1 ring-zinc-200/60">
-                <div className="flex items-center justify-between gap-4">
-                  <div className="min-w-0">
-                    <div className="truncate text-base font-semibold">
-                      {title}
-                    </div>
-                    {subtitle ? (
-                      <div className="truncate text-sm text-zinc-500">
-                        {subtitle}
-                      </div>
-                    ) : null}
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    {actions}
-                    <div className="grid h-9 w-9 place-items-center rounded-full bg-zinc-900 text-xs font-semibold text-white">
-                      AC
-                    </div>
-                  </div>
-                </div>
+          <header className="sticky top-0 z-10 border-b border-slate-900 bg-slate-950/70 backdrop-blur">
+            <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-4">
+              <div className="min-w-0">
+                <div className="truncate text-lg font-semibold">{title}</div>
+                {subtitle ? (
+                  <div className="truncate text-sm text-slate-400">{subtitle}</div>
+                ) : null}
               </div>
+              {actions ? <div className="flex items-center gap-2">{actions}</div> : null}
             </div>
           </header>
 
           {/* Content */}
-          <main className="flex-1 px-4 pb-8 pt-4 md:px-6">
-            <div className="mx-auto w-full max-w-6xl">{children}</div>
-          </main>
-        </div>
+          <div className="mx-auto max-w-6xl px-6 py-6">{children}</div>
+        </main>
       </div>
     </div>
   );

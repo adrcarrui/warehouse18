@@ -7,8 +7,10 @@ import LocationsPage from "./pages/LocationsPage";
 import StockContainersPage from "./pages/StockContainersPage";
 import {MovementsPage} from "./pages/Movements/MovementsPage";
 import RFIDMonitorPage from "./pages/RFIDMonitorPage";
+import DashboardPage from "./pages/Dashboard";
 import "./index.css"
 
+/*
 function Home() {
   return (
     <div style={{ padding: 16, fontFamily: "system-ui" }}>
@@ -20,16 +22,18 @@ function Home() {
         <li><Link to="/stock-containers">StockContainers</Link></li>
         <li><Link to="/movements">Movements</Link></li>
         <li><Link to="/rfid-monitor">RFIDMonitor</Link></li>
+        <li><Link to="/dashboard">Dashboard</Link></li>
       </ul>
     </div>
   );
 }
+  */
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   //<React.StrictMode>
     <BrowserRouter>
       <Routes>
-        <Route path="/" element={<Home />} />
+        <Route path="/" element={<DashboardPage />} />
         <Route path="/items" element={<ItemsPage />} />
         <Route path="/users" element={<UsersPage />} />
         <Route path="/locations" element={<LocationsPage />} />
