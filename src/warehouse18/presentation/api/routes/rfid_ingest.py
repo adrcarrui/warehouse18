@@ -11,7 +11,7 @@ from warehouse18.presentation.api.schemas import RfidIngestIn
 router = APIRouter(prefix="/rfid", tags=["rfid"])
 
 # Anti-spam: evita crear movimientos duplicados por lecturas repetidas
-COOLDOWN_SECONDS = 0
+COOLDOWN_SECONDS = 3
 _last_move_ts: dict[int, datetime] = {}  # stock_container_id -> last movement ts
 
 
@@ -55,15 +55,24 @@ def ingest_rfid_event(body: RfidIngestIn, request: Request, db: Session = Depend
     # 3) cooldown anti-spam
     now = datetime.now(timezone.utc)
     last = _last_move_ts.get(sc.id)
-    if last and (now - last) < timedelta(seconds=COOLDOWN_SECONDS):
-        return {"status": "ignored", "reason": "cooldown", "stock_container_id": sc.id}
-
+    #if last and (now - last) < timedelta(seconds=COOLDOWN_SECONDS):
+    #    return {"status": "ignored", "reason": "cooldown", "stock_container_id": sc.id}
+    if last:
+        diff = (now - last).total_seconds()
+        if diff < COOLDOWN_SECONDS:
+            return {
+                "status": "ignored",
+                "reason": "cooldown",
+                "stock_container_id": sc.id,
+                "seconds_since_last": diff,
+                "cooldown_seconds": COOLDOWN_SECONDS,
+            }
     # 4) resolve movement type por code (evita hardcode y fallos FK)
     mt = db.query(MovementType).filter(MovementType.code == "GT").first()
     if not mt:
         raise HTTPException(
             status_code=409,
-            detail="MovementType code 'RFID_MOVE' not found. Seed it first.",
+            detail="MovementType code 'GT' not found. Seed it first.",
         )
 
     # 5) crear movement + actualizar stock_container.location_id (misma transacción)

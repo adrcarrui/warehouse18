@@ -1,9 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { apiGet } from "../api";
 import type { PageMeta, PageOut } from "../api";
-
-
-console.log("API MODULE LOADED", typeof apiGet);
+import { AppShell } from "../app/AppShell";
 
 type ItemOut = {
   id: number;
@@ -16,6 +14,36 @@ type ItemOut = {
   created_at: string;
   updated_at: string;
 };
+
+function Badge({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-xs text-zinc-700">
+      {children}
+    </span>
+  );
+}
+
+function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "outline" | "ghost" }) {
+  const { variant = "outline", className = "", ...rest } = props;
+  const base =
+    "inline-flex items-center justify-center rounded-lg px-3 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
+  const styles =
+    variant === "primary"
+      ? "bg-zinc-900 text-white hover:bg-zinc-800"
+      : variant === "ghost"
+      ? "bg-transparent hover:bg-zinc-100"
+      : "border border-zinc-200 bg-white hover:bg-zinc-50";
+  return <button className={`${base} ${styles} ${className}`} {...rest} />;
+}
+
+function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <input
+      {...props}
+      className={`h-10 w-full rounded-lg border border-zinc-200 bg-white px-3 text-sm outline-none focus:border-zinc-400 ${props.className ?? ""}`}
+    />
+  );
+}
 
 export default function ItemsPage() {
   const [q, setQ] = useState("");
@@ -65,84 +93,112 @@ export default function ItemsPage() {
   const canPrev = !loading && meta.page > 1;
   const canNext = !loading && meta.pages > 0 && meta.page < meta.pages;
 
+  const summary = useMemo(() => {
+    const pages = meta.pages || 0;
+    return `${meta.total} total • page ${meta.page}/${pages || 1} • size ${meta.pageSize}`;
+  }, [meta]);
+
   return (
-    <div style={{ padding: 16, fontFamily: "system-ui" }}>
-      <h2 style={{ marginTop: 0 }}>Items</h2>
-
-      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 12 }}>
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Search (q)..."
-          style={{ padding: 8, width: 320 }}
-        />
-        <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <input
-            type="checkbox"
-            checked={includeInactive}
-            onChange={(e) => setIncludeInactive(e.target.checked)}
-          />
-          include inactive
-        </label>
-        <button onClick={() => load(1)} disabled={loading}>
+    <AppShell
+      title="Items"
+      actions={
+        <Button variant="primary" onClick={() => load(1)} disabled={loading}>
           Search
-        </button>
-      </div>
+        </Button>
+      }
+    >
+      <div className="space-y-4">
+        {/* Filters */}
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex w-full flex-col gap-2 md:flex-row md:items-center">
+            <div className="w-full md:w-96">
+              <Input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Search by code, name, category..."
+              />
+            </div>
 
-      {err && (
-        <div style={{ color: "crimson", marginBottom: 12 }}>
-          Error: {err}
+            <label className="flex items-center gap-2 text-sm text-zinc-700">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded border-zinc-300"
+                checked={includeInactive}
+                onChange={(e) => setIncludeInactive(e.target.checked)}
+              />
+              include inactive
+            </label>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Badge>{summary}</Badge>
+            <Button variant="ghost" onClick={() => { setQ(""); setIncludeInactive(false); load(1); }} disabled={loading}>
+              Reset
+            </Button>
+          </div>
         </div>
-      )}
 
-      <div style={{ marginBottom: 10, color: "#444" }}>
-        Total: {meta.total} | Page {meta.page}/{meta.pages} | Page size {meta.pageSize}
-      </div>
+        {/* Error */}
+        {err && (
+          <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            Error: {err}
+          </div>
+        )}
 
-      <div style={{ border: "1px solid #eee", borderRadius: 8, overflow: "hidden" }}>
-        <table width="100%" cellPadding={10} style={{ borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ textAlign: "left", background: "#fafafa", borderBottom: "1px solid #eee" }}>
-              <th>ID</th>
-              <th>Code</th>
-              <th>Name</th>
-              <th>UoM</th>
-              <th>Category</th>
-              <th>Serialized</th>
-              <th>Active</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.id} style={{ borderBottom: "1px solid #f2f2f2" }}>
-                <td>{r.id}</td>
-                <td>{r.item_code ?? ""}</td>
-                <td>{r.name}</td>
-                <td>{r.uom}</td>
-                <td>{r.category ?? ""}</td>
-                <td>{r.is_serialized ? "yes" : "no"}</td>
-                <td>{r.is_active ? "yes" : "no"}</td>
-              </tr>
-            ))}
-            {!loading && rows.length === 0 && (
+        {/* Table */}
+        <div className="overflow-x-auto rounded-xl border border-zinc-200">
+          <table className="min-w-full border-collapse">
+            <thead className="bg-zinc-50">
               <tr>
-                <td colSpan={7} style={{ padding: 16, color: "#666" }}>
-                  No results
-                </td>
+                {["ID", "Code", "Name", "UoM", "Category", "Serialized", "Active"].map((h) => (
+                  <th
+                    key={h}
+                    className="whitespace-nowrap border-b border-zinc-200 px-3 py-2 text-left text-xs font-semibold text-zinc-700"
+                  >
+                    {h}
+                  </th>
+                ))}
               </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+            </thead>
 
-      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-        <button onClick={() => load(page - 1)} disabled={!canPrev}>
-          Prev
-        </button>
-        <button onClick={() => load(page + 1)} disabled={!canNext}>
-          Next
-        </button>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} className="hover:bg-zinc-50">
+                  <td className="border-b border-zinc-100 px-3 py-2 text-sm font-medium">{r.id}</td>
+                  <td className="border-b border-zinc-100 px-3 py-2 text-sm text-zinc-800">{r.item_code ?? ""}</td>
+                  <td className="border-b border-zinc-100 px-3 py-2 text-sm text-zinc-800">{r.name}</td>
+                  <td className="border-b border-zinc-100 px-3 py-2 text-sm text-zinc-800">{r.uom}</td>
+                  <td className="border-b border-zinc-100 px-3 py-2 text-sm text-zinc-800">{r.category ?? ""}</td>
+                  <td className="border-b border-zinc-100 px-3 py-2 text-sm text-zinc-800">{r.is_serialized ? "yes" : "no"}</td>
+                  <td className="border-b border-zinc-100 px-3 py-2 text-sm text-zinc-800">{r.is_active ? "yes" : "no"}</td>
+                </tr>
+              ))}
+
+              {!loading && rows.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="px-3 py-6 text-sm text-zinc-600">
+                    No results
+                  </td>
+                </tr>
+              )}
+
+              {loading && (
+                <tr>
+                  <td colSpan={7} className="px-3 py-6 text-sm text-zinc-600">
+                    Loading…
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Pagination */}
+        <div className="flex items-center gap-2">
+          <Button onClick={() => load(page - 1)} disabled={!canPrev}>Prev</Button>
+          <Button onClick={() => load(page + 1)} disabled={!canNext}>Next</Button>
+        </div>
       </div>
-    </div>
+    </AppShell>
   );
 }

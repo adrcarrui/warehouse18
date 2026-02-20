@@ -1,0 +1,1102 @@
+[
+  {
+    "locationCode_normalized": "out of system",
+    "existing_id": 5,
+    "new_id": 1298,
+    "raw_row": {
+      "locationCode": "Out of System",
+      "locationType": 1595,
+      "id": 1298,
+      "entity": null,
+      "idCol": null,
+      "guid": "1AAFAD1-7774-E5F3-F4BB-03C1984A899",
+      "mysimOrder": 1298,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-03-19 14:31:00",
+      "lastUpdated": "2024-04-15 12:11:00",
+      "idOwner": 2,
+      "idUserUpdated": 847
+    }
+  },
+  {
+    "locationCode_normalized": "13p0-02-01",
+    "existing_id": 2585,
+    "new_id": 137,
+    "raw_row": {
+      "locationCode": "13P0-02-01",
+      "locationType": null,
+      "id": 137,
+      "entity": null,
+      "idCol": null,
+      "guid": "2416E93-2788-644E-A659-5D4EAD27C4E",
+      "mysimOrder": 137,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-03-19 11:18:33",
+      "lastUpdated": "2022-10-04 09:50:27",
+      "idOwner": 2,
+      "idUserUpdated": 333
+    }
+  },
+  {
+    "locationCode_normalized": "13r0-04-01",
+    "existing_id": 2653,
+    "new_id": 2654,
+    "raw_row": {
+      "locationCode": "13R0-04-01",
+      "locationType": null,
+      "id": 2654,
+      "entity": null,
+      "idCol": null,
+      "guid": "38D34AD-D02A-26FA-9860-4CF5231AE42",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2024-01-05 11:43:17",
+      "lastUpdated": "2024-01-05 11:43:17",
+      "idOwner": 847,
+      "idUserUpdated": 847
+    }
+  },
+  {
+    "locationCode_normalized": "13p1-05-03",
+    "existing_id": 2621,
+    "new_id": 2459,
+    "raw_row": {
+      "locationCode": "13P1-05-03",
+      "locationType": 50,
+      "id": 2459,
+      "entity": null,
+      "idCol": null,
+      "guid": "398F7B7-3744-C0D4-A13C-2DFCEFD6C15",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2020-11-06 16:56:35",
+      "lastUpdated": "2020-11-06 16:56:35",
+      "idOwner": 10,
+      "idUserUpdated": 10
+    }
+  },
+  {
+    "locationCode_normalized": "13i0-04-02",
+    "existing_id": 1619,
+    "new_id": 160,
+    "raw_row": {
+      "locationCode": "13I0-04-02",
+      "locationType": null,
+      "id": 160,
+      "entity": null,
+      "idCol": null,
+      "guid": "3A8A5E8-39E0-77EA-B0BA-51D418D866B",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-03-19 11:23:00",
+      "lastUpdated": "2019-11-09 00:51:34",
+      "idOwner": 2,
+      "idUserUpdated": 32
+    }
+  },
+  {
+    "locationCode_normalized": "7c",
+    "existing_id": 1803,
+    "new_id": 84,
+    "raw_row": {
+      "locationCode": "7C",
+      "locationType": null,
+      "id": 84,
+      "entity": null,
+      "idCol": null,
+      "guid": "4127236-12F0-6D86-EF38-6C6EAAB7DAE",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-03-19 11:06:46",
+      "lastUpdated": "2019-03-19 11:06:46",
+      "idOwner": 2,
+      "idUserUpdated": 2
+    }
+  },
+  {
+    "locationCode_normalized": "13a0-03-01",
+    "existing_id": 161,
+    "new_id": 2682,
+    "raw_row": {
+      "locationCode": "13A0-03-01",
+      "locationType": 49,
+      "id": 2682,
+      "entity": null,
+      "idCol": null,
+      "guid": "47E10D8-684D-FA07-891A-CD841863928",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2024-04-25 06:40:04",
+      "lastUpdated": "2024-04-25 06:40:05",
+      "idOwner": 847,
+      "idUserUpdated": 847
+    }
+  },
+  {
+    "locationCode_normalized": "1a pool",
+    "existing_id": 1905,
+    "new_id": 2661,
+    "raw_row": {
+      "locationCode": "1A POOL",
+      "locationType": 49,
+      "id": 2661,
+      "entity": null,
+      "idCol": null,
+      "guid": "49691D4-7D38-DAFC-1B20-FC3AFEB607D",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2024-02-22 12:01:37",
+      "lastUpdated": "2024-02-22 12:01:37",
+      "idOwner": 31,
+      "idUserUpdated": 31
+    }
+  },
+  {
+    "locationCode_normalized": "13q0-05-05",
+    "existing_id": 2175,
+    "new_id": 1569,
+    "raw_row": {
+      "locationCode": "13Q0-05-05",
+      "locationType": null,
+      "id": 1569,
+      "entity": null,
+      "idCol": null,
+      "guid": "5C7E098-AEF6-F8D8-1BD0-9F1EC6067FE",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-04-27 09:00:46",
+      "lastUpdated": "2019-04-27 09:00:46",
+      "idOwner": 2,
+      "idUserUpdated": 2
+    }
+  },
+  {
+    "locationCode_normalized": "9c",
+    "existing_id": 108,
+    "new_id": 2688,
+    "raw_row": {
+      "locationCode": "9C",
+      "locationType": 49,
+      "id": 2688,
+      "entity": null,
+      "idCol": null,
+      "guid": "6077576-43F3-CE7F-653B-E581F587A0D",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2024-05-14 12:33:47",
+      "lastUpdated": "2024-05-14 12:33:47",
+      "idOwner": 847,
+      "idUserUpdated": 847
+    }
+  },
+  {
+    "locationCode_normalized": "nosap-10-04",
+    "existing_id": 2660,
+    "new_id": 2638,
+    "raw_row": {
+      "locationCode": "NOSAP-10-04",
+      "locationType": 49,
+      "id": 2638,
+      "entity": null,
+      "idCol": null,
+      "guid": "6660D07-A240-D1F0-F383-15E54991ADC",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2023-10-23 11:23:56",
+      "lastUpdated": "2023-10-23 11:23:56",
+      "idOwner": 649,
+      "idUserUpdated": 649
+    }
+  },
+  {
+    "locationCode_normalized": "4c",
+    "existing_id": 43,
+    "new_id": 2652,
+    "raw_row": {
+      "locationCode": "4C",
+      "locationType": 49,
+      "id": 2652,
+      "entity": null,
+      "idCol": null,
+      "guid": "67A2059-D9D3-B736-0B67-428F779A13C",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2023-11-23 11:47:56",
+      "lastUpdated": "2023-11-23 11:47:56",
+      "idOwner": 743,
+      "idUserUpdated": 743
+    }
+  },
+  {
+    "locationCode_normalized": "13p1-05-02",
+    "existing_id": 2458,
+    "new_id": 2620,
+    "raw_row": {
+      "locationCode": "13P1-05-02",
+      "locationType": 49,
+      "id": 2620,
+      "entity": null,
+      "idCol": null,
+      "guid": "7466BAF-4A2A-0CBF-A4FD-15463650940",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2023-06-19 07:24:29",
+      "lastUpdated": "2023-06-19 07:24:29",
+      "idOwner": 649,
+      "idUserUpdated": 649
+    }
+  },
+  {
+    "locationCode_normalized": "13p1-05-01",
+    "existing_id": 2619,
+    "new_id": 2457,
+    "raw_row": {
+      "locationCode": "13P1-05-01",
+      "locationType": 50,
+      "id": 2457,
+      "entity": null,
+      "idCol": null,
+      "guid": "7617ED3-570F-EA60-47FD-4081FA2CD1E",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2020-11-06 16:56:14",
+      "lastUpdated": "2020-11-06 16:56:14",
+      "idOwner": 10,
+      "idUserUpdated": 10
+    }
+  },
+  {
+    "locationCode_normalized": "5f",
+    "existing_id": 71,
+    "new_id": 1863,
+    "raw_row": {
+      "locationCode": "5F",
+      "locationType": 48,
+      "id": 1863,
+      "entity": null,
+      "idCol": null,
+      "guid": "789B529-C394-2734-4760-423810A83C7",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-05-29 09:23:56",
+      "lastUpdated": "2019-05-29 09:23:56",
+      "idOwner": 31,
+      "idUserUpdated": 31
+    }
+  },
+  {
+    "locationCode_normalized": "nosap-05-02",
+    "existing_id": 2544,
+    "new_id": 2662,
+    "raw_row": {
+      "locationCode": "NOSAP-05-02",
+      "locationType": 49,
+      "id": 2662,
+      "entity": null,
+      "idCol": null,
+      "guid": "88F89E8-DEB2-61B0-BC63-FA4D92D0AF4",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2024-02-23 12:52:50",
+      "lastUpdated": "2024-02-23 12:52:50",
+      "idOwner": 847,
+      "idUserUpdated": 847
+    }
+  },
+  {
+    "locationCode_normalized": "escenarios",
+    "existing_id": 2592,
+    "new_id": 1764,
+    "raw_row": {
+      "locationCode": "ESCENARIOS",
+      "locationType": null,
+      "id": 1764,
+      "entity": null,
+      "idCol": null,
+      "guid": "89517F1-1134-8C1A-6E14-4D8F6739522",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-05-03 11:18:32",
+      "lastUpdated": "2019-05-03 11:18:32",
+      "idOwner": 2,
+      "idUserUpdated": 2
+    }
+  },
+  {
+    "locationCode_normalized": "13e0-01-03",
+    "existing_id": 1946,
+    "new_id": 361,
+    "raw_row": {
+      "locationCode": "13E0-01-03",
+      "locationType": null,
+      "id": 361,
+      "entity": null,
+      "idCol": null,
+      "guid": "898E46B-16DA-E1E8-C2C1-3694A10CCEF",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-03-19 12:57:47",
+      "lastUpdated": "2019-03-19 12:57:47",
+      "idOwner": 2,
+      "idUserUpdated": 2
+    }
+  },
+  {
+    "locationCode_normalized": "13w0-05-02",
+    "existing_id": 2237,
+    "new_id": 2238,
+    "raw_row": {
+      "locationCode": "13W0-05-02",
+      "locationType": 50,
+      "id": 2238,
+      "entity": null,
+      "idCol": null,
+      "guid": "8A5D5D3-C1C1-A47F-0116-43E14881045",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-12-10 10:22:49",
+      "lastUpdated": "2019-12-10 10:22:49",
+      "idOwner": 20,
+      "idUserUpdated": 20
+    }
+  },
+  {
+    "locationCode_normalized": "13l1-01-02",
+    "existing_id": 2314,
+    "new_id": 2504,
+    "raw_row": {
+      "locationCode": "13L1-01-02",
+      "locationType": 49,
+      "id": 2504,
+      "entity": null,
+      "idCol": null,
+      "guid": "8FEA0A0-04A0-C542-C1AC-EACC51BB6F2",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2021-09-16 10:44:00",
+      "lastUpdated": "2021-09-16 11:39:15",
+      "idOwner": 22,
+      "idUserUpdated": 22
+    }
+  },
+  {
+    "locationCode_normalized": "13d1-05-01",
+    "existing_id": 2623,
+    "new_id": 1211,
+    "raw_row": {
+      "locationCode": "13D1-05-01",
+      "locationType": null,
+      "id": 1211,
+      "entity": null,
+      "idCol": null,
+      "guid": "904EE91-4861-2A40-7791-9BA1EA6DE15",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-03-19 14:11:03",
+      "lastUpdated": "2019-03-19 14:11:03",
+      "idOwner": 2,
+      "idUserUpdated": 2
+    }
+  },
+  {
+    "locationCode_normalized": "13r0-04-01",
+    "existing_id": 2653,
+    "new_id": 2241,
+    "raw_row": {
+      "locationCode": "13R0-04-01",
+      "locationType": 50,
+      "id": 2241,
+      "entity": null,
+      "idCol": null,
+      "guid": "919AAED-9654-7C89-C218-411D09C3F8B",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-12-10 10:29:42",
+      "lastUpdated": "2019-12-10 10:29:42",
+      "idOwner": 20,
+      "idUserUpdated": 20
+    }
+  },
+  {
+    "locationCode_normalized": "5f",
+    "existing_id": 71,
+    "new_id": 1864,
+    "raw_row": {
+      "locationCode": "5F",
+      "locationType": 48,
+      "id": 1864,
+      "entity": null,
+      "idCol": null,
+      "guid": "9FDAEEB-93B8-D0AA-10A1-C4423573215",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-05-29 09:24:10",
+      "lastUpdated": "2019-05-29 09:24:10",
+      "idOwner": 31,
+      "idUserUpdated": 31
+    }
+  },
+  {
+    "locationCode_normalized": "4a",
+    "existing_id": 2613,
+    "new_id": 2597,
+    "raw_row": {
+      "locationCode": "4A",
+      "locationType": null,
+      "id": 2597,
+      "entity": null,
+      "idCol": null,
+      "guid": "A2E905D-CFA9-F9D9-F37B-B14CAAD57EC",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2023-01-16 09:40:08",
+      "lastUpdated": "2023-01-16 09:40:08",
+      "idOwner": 649,
+      "idUserUpdated": 649
+    }
+  },
+  {
+    "locationCode_normalized": "taller",
+    "existing_id": 2119,
+    "new_id": 2479,
+    "raw_row": {
+      "locationCode": "TALLER",
+      "locationType": 48,
+      "id": 2479,
+      "entity": null,
+      "idCol": null,
+      "guid": "A8CC1D9-CC6D-E083-D823-92DBA9D3CC8",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2021-04-27 04:37:36",
+      "lastUpdated": "2021-04-27 04:37:36",
+      "idOwner": 30,
+      "idUserUpdated": 30
+    }
+  },
+  {
+    "locationCode_normalized": "3c",
+    "existing_id": 1246,
+    "new_id": 34,
+    "raw_row": {
+      "locationCode": "3C",
+      "locationType": null,
+      "id": 34,
+      "entity": null,
+      "idCol": null,
+      "guid": "B44637E-6062-D1E9-B404-ABEB493F48A",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-03-19 10:54:29",
+      "lastUpdated": "2019-03-19 10:54:29",
+      "idOwner": 2,
+      "idUserUpdated": 2
+    }
+  },
+  {
+    "locationCode_normalized": "13u0-02-01",
+    "existing_id": 1836,
+    "new_id": 1834,
+    "raw_row": {
+      "locationCode": "13U0-02-01",
+      "locationType": 49,
+      "id": 1834,
+      "entity": null,
+      "idCol": null,
+      "guid": "B45F2C9-928C-0508-6E0A-64CE83F051E",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-05-14 09:50:30",
+      "lastUpdated": "2019-05-14 09:50:30",
+      "idOwner": 24,
+      "idUserUpdated": 24
+    }
+  },
+  {
+    "locationCode_normalized": "1d",
+    "existing_id": 95,
+    "new_id": 506,
+    "raw_row": {
+      "locationCode": "1D",
+      "locationType": null,
+      "id": 506,
+      "entity": null,
+      "idCol": null,
+      "guid": "B834B05-ABA4-1BC3-4B35-4AC006CEFCF",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-03-19 13:20:00",
+      "lastUpdated": "2019-06-14 10:22:29",
+      "idOwner": 2,
+      "idUserUpdated": 2
+    }
+  },
+  {
+    "locationCode_normalized": "5a",
+    "existing_id": 2689,
+    "new_id": 135,
+    "raw_row": {
+      "locationCode": "5A",
+      "locationType": null,
+      "id": 135,
+      "entity": null,
+      "idCol": null,
+      "guid": "BD8CE3F-3167-A91C-0242-B7D0E816A7B",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-03-19 11:15:54",
+      "lastUpdated": "2019-03-19 11:15:54",
+      "idOwner": 2,
+      "idUserUpdated": 2
+    }
+  },
+  {
+    "locationCode_normalized": "3d",
+    "existing_id": 2615,
+    "new_id": 37,
+    "raw_row": {
+      "locationCode": "3D",
+      "locationType": null,
+      "id": 37,
+      "entity": null,
+      "idCol": null,
+      "guid": "BEBA9B5-170D-6E91-48D8-4560E36175A",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-03-19 10:55:02",
+      "lastUpdated": "2019-03-19 10:55:02",
+      "idOwner": 2,
+      "idUserUpdated": 2
+    }
+  },
+  {
+    "locationCode_normalized": "13m0-03-02",
+    "existing_id": 2157,
+    "new_id": 2679,
+    "raw_row": {
+      "locationCode": "13M0-03-02",
+      "locationType": 49,
+      "id": 2679,
+      "entity": null,
+      "idCol": null,
+      "guid": "C340FE4-5747-FE8F-F364-D0528FFE71B",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2024-04-04 11:23:28",
+      "lastUpdated": "2024-04-04 11:23:28",
+      "idOwner": 847,
+      "idUserUpdated": 847
+    }
+  },
+  {
+    "locationCode_normalized": "13k1-03-03",
+    "existing_id": 2303,
+    "new_id": 2648,
+    "raw_row": {
+      "locationCode": "13K1-03-03",
+      "locationType": 49,
+      "id": 2648,
+      "entity": null,
+      "idCol": null,
+      "guid": "C3D283D-18D8-DE12-E790-C398C11F1DF",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2023-11-17 13:06:31",
+      "lastUpdated": "2023-11-17 13:06:31",
+      "idOwner": 847,
+      "idUserUpdated": 847
+    }
+  },
+  {
+    "locationCode_normalized": "13u0-02-04",
+    "existing_id": 2427,
+    "new_id": 1842,
+    "raw_row": {
+      "locationCode": "13U0-02-04",
+      "locationType": 49,
+      "id": 1842,
+      "entity": null,
+      "idCol": null,
+      "guid": "C70DE7A-967F-54E7-9DB4-8D03235031E",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-05-15 14:52:59",
+      "lastUpdated": "2019-05-15 14:52:59",
+      "idOwner": 24,
+      "idUserUpdated": 24
+    }
+  },
+  {
+    "locationCode_normalized": "8c",
+    "existing_id": 1860,
+    "new_id": 142,
+    "raw_row": {
+      "locationCode": "8C",
+      "locationType": null,
+      "id": 142,
+      "entity": null,
+      "idCol": null,
+      "guid": "CA6729F-EC59-1F17-33CD-62869D747FA",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-03-19 11:19:42",
+      "lastUpdated": "2019-03-19 11:19:42",
+      "idOwner": 2,
+      "idUserUpdated": 2
+    }
+  },
+  {
+    "locationCode_normalized": "3d",
+    "existing_id": 2615,
+    "new_id": 1892,
+    "raw_row": {
+      "locationCode": "3D",
+      "locationType": 50,
+      "id": 1892,
+      "entity": null,
+      "idCol": null,
+      "guid": "CD87E4E-908B-E6C6-CB22-1C03F5F66D6",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-06-19 11:43:04",
+      "lastUpdated": "2019-06-19 11:43:04",
+      "idOwner": 9,
+      "idUserUpdated": 9
+    }
+  },
+  {
+    "locationCode_normalized": "nosap-04-01",
+    "existing_id": 2539,
+    "new_id": 2532,
+    "raw_row": {
+      "locationCode": "NOSAP-04-01",
+      "locationType": 49,
+      "id": 2532,
+      "entity": null,
+      "idCol": null,
+      "guid": "CDD296F-1012-D483-D095-9A10CB9D299",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2022-05-20 07:41:26",
+      "lastUpdated": "2022-05-20 07:41:26",
+      "idOwner": 649,
+      "idUserUpdated": 649
+    }
+  },
+  {
+    "locationCode_normalized": "13p0-01-02",
+    "existing_id": 1175,
+    "new_id": 2281,
+    "raw_row": {
+      "locationCode": "13P0-01-02",
+      "locationType": null,
+      "id": 2281,
+      "entity": null,
+      "idCol": null,
+      "guid": "D0344E5-0699-6BF9-FC88-E29EAB29B38",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2020-02-04 13:52:06",
+      "lastUpdated": "2020-02-04 13:52:06",
+      "idOwner": 2,
+      "idUserUpdated": 2
+    }
+  },
+  {
+    "locationCode_normalized": "13h1-03-01",
+    "existing_id": 1338,
+    "new_id": 1826,
+    "raw_row": {
+      "locationCode": "13H1-03-01",
+      "locationType": 49,
+      "id": 1826,
+      "entity": null,
+      "idCol": null,
+      "guid": "D2C81D2-6D01-2794-6985-6E9FB37F474",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-05-13 10:04:15",
+      "lastUpdated": "2019-05-13 10:04:15",
+      "idOwner": 24,
+      "idUserUpdated": 24
+    }
+  },
+  {
+    "locationCode_normalized": "alm-chtm5",
+    "existing_id": 2625,
+    "new_id": 2488,
+    "raw_row": {
+      "locationCode": "ALM-CHTM5",
+      "locationType": 48,
+      "id": 2488,
+      "entity": null,
+      "idCol": null,
+      "guid": "D736F86-E51B-AEDB-83F2-0306F3DF0F9",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2021-07-25 07:42:03",
+      "lastUpdated": "2021-07-25 07:42:03",
+      "idOwner": 20,
+      "idUserUpdated": 20
+    }
+  },
+  {
+    "locationCode_normalized": "13l1-05-01",
+    "existing_id": 2650,
+    "new_id": 2649,
+    "raw_row": {
+      "locationCode": "13L1-05-01",
+      "locationType": 49,
+      "id": 2649,
+      "entity": null,
+      "idCol": null,
+      "guid": "D8B03A8-09D4-784D-17D8-B1BA39F1689",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2023-11-21 11:02:20",
+      "lastUpdated": "2023-11-21 11:02:20",
+      "idOwner": 847,
+      "idUserUpdated": 847
+    }
+  },
+  {
+    "locationCode_normalized": "13i0-02-02",
+    "existing_id": 2151,
+    "new_id": 124,
+    "raw_row": {
+      "locationCode": "13I0-02-02",
+      "locationType": null,
+      "id": 124,
+      "entity": null,
+      "idCol": null,
+      "guid": "DBACC8C-D538-CF19-5002-88B647CD6EB",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-03-19 11:14:35",
+      "lastUpdated": "2019-03-19 11:14:35",
+      "idOwner": 2,
+      "idUserUpdated": 2
+    }
+  },
+  {
+    "locationCode_normalized": "13i0-01-02",
+    "existing_id": 338,
+    "new_id": 2150,
+    "raw_row": {
+      "locationCode": "13I0-01-02",
+      "locationType": 50,
+      "id": 2150,
+      "entity": null,
+      "idCol": null,
+      "guid": "DFA5806-437F-8AA7-00E4-9C03A231960",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-12-03 13:27:50",
+      "lastUpdated": "2019-12-03 13:27:50",
+      "idOwner": 20,
+      "idUserUpdated": 20
+    }
+  },
+  {
+    "locationCode_normalized": "3d",
+    "existing_id": 2615,
+    "new_id": 2616,
+    "raw_row": {
+      "locationCode": "3D",
+      "locationType": 49,
+      "id": 2616,
+      "entity": null,
+      "idCol": null,
+      "guid": "DFB119A-A4B5-B256-241D-533B4C75C7B",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2023-05-25 08:40:32",
+      "lastUpdated": "2023-05-25 08:40:32",
+      "idOwner": 31,
+      "idUserUpdated": 31
+    }
+  },
+  {
+    "locationCode_normalized": "13u0-05-03",
+    "existing_id": 1830,
+    "new_id": 1178,
+    "raw_row": {
+      "locationCode": "13U0-05-03",
+      "locationType": null,
+      "id": 1178,
+      "entity": null,
+      "idCol": null,
+      "guid": "DFF7791-3359-273C-2B2A-23FC5A20BC9",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-03-19 14:02:34",
+      "lastUpdated": "2019-03-19 14:02:34",
+      "idOwner": 2,
+      "idUserUpdated": 2
+    }
+  },
+  {
+    "locationCode_normalized": "5f",
+    "existing_id": 71,
+    "new_id": 1862,
+    "raw_row": {
+      "locationCode": "5F",
+      "locationType": null,
+      "id": 1862,
+      "entity": null,
+      "idCol": null,
+      "guid": "E075FA7-62AC-6077-76C5-8767167945D",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-05-29 09:23:37",
+      "lastUpdated": "2019-05-29 09:23:37",
+      "idOwner": 31,
+      "idUserUpdated": 31
+    }
+  },
+  {
+    "locationCode_normalized": "tc068",
+    "existing_id": 2536,
+    "new_id": 2537,
+    "raw_row": {
+      "locationCode": "TC068",
+      "locationType": null,
+      "id": 2537,
+      "entity": null,
+      "idCol": null,
+      "guid": "E11EFF5-5CC2-E856-3295-B0963376B33",
+      "mysimOrder": 2537,
+      "slug": null,
+      "enabled": true,
+      "created": "2022-06-10 07:55:49",
+      "lastUpdated": "2022-06-10 07:55:49",
+      "idOwner": 649,
+      "idUserUpdated": 649
+    }
+  },
+  {
+    "locationCode_normalized": "13c1-03-03",
+    "existing_id": 2499,
+    "new_id": 334,
+    "raw_row": {
+      "locationCode": "13C1-03-03",
+      "locationType": null,
+      "id": 334,
+      "entity": null,
+      "idCol": null,
+      "guid": "E1F0882-7530-2B0D-2FCC-DB330D13C2C",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-03-19 12:52:50",
+      "lastUpdated": "2019-03-19 12:52:50",
+      "idOwner": 2,
+      "idUserUpdated": 2
+    }
+  },
+  {
+    "locationCode_normalized": "13l1-05-01",
+    "existing_id": 2650,
+    "new_id": 2329,
+    "raw_row": {
+      "locationCode": "13L1-05-01",
+      "locationType": 49,
+      "id": 2329,
+      "entity": null,
+      "idCol": null,
+      "guid": "E23524A-6E86-4191-7618-363D06EAC54",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2020-02-11 11:05:40",
+      "lastUpdated": "2020-02-11 11:05:40",
+      "idOwner": 236,
+      "idUserUpdated": 236
+    }
+  },
+  {
+    "locationCode_normalized": "4a",
+    "existing_id": 2613,
+    "new_id": 2382,
+    "raw_row": {
+      "locationCode": "4A",
+      "locationType": 50,
+      "id": 2382,
+      "entity": null,
+      "idCol": null,
+      "guid": "E23D80C-54E6-6255-342C-62F6DE5BE30",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2020-07-27 16:07:17",
+      "lastUpdated": "2020-07-27 16:07:17",
+      "idOwner": 10,
+      "idUserUpdated": 10
+    }
+  },
+  {
+    "locationCode_normalized": "nosap-05-02",
+    "existing_id": 2544,
+    "new_id": 2503,
+    "raw_row": {
+      "locationCode": "NOSAP-05-02",
+      "locationType": 49,
+      "id": 2503,
+      "entity": null,
+      "idCol": null,
+      "guid": "E46B40F-8590-B0CD-2ABF-8E593A3B66F",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2021-09-10 12:07:27",
+      "lastUpdated": "2021-09-10 12:07:27",
+      "idOwner": 22,
+      "idUserUpdated": 22
+    }
+  },
+  {
+    "locationCode_normalized": "nosap-05-03",
+    "existing_id": 2545,
+    "new_id": 2502,
+    "raw_row": {
+      "locationCode": "NOSAP-05-03",
+      "locationType": 49,
+      "id": 2502,
+      "entity": null,
+      "idCol": null,
+      "guid": "EA8F2F0-7C52-120B-E950-49F8E493AD1",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2021-09-10 12:03:52",
+      "lastUpdated": "2021-09-10 12:03:52",
+      "idOwner": 553,
+      "idUserUpdated": 553
+    }
+  },
+  {
+    "locationCode_normalized": "3e",
+    "existing_id": 2608,
+    "new_id": 38,
+    "raw_row": {
+      "locationCode": "3E",
+      "locationType": null,
+      "id": 38,
+      "entity": null,
+      "idCol": null,
+      "guid": "F1479F5-0C32-065A-621F-94BD9C939FB",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-03-19 10:55:42",
+      "lastUpdated": "2019-03-19 10:55:42",
+      "idOwner": 2,
+      "idUserUpdated": 2
+    }
+  },
+  {
+    "locationCode_normalized": "13r0-02-03",
+    "existing_id": 2655,
+    "new_id": 2246,
+    "raw_row": {
+      "locationCode": "13R0-02-03",
+      "locationType": 50,
+      "id": 2246,
+      "entity": null,
+      "idCol": null,
+      "guid": "F281B5A-2A6C-BC22-3692-6397CFE4D9C",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2019-12-10 10:32:40",
+      "lastUpdated": "2019-12-10 10:32:40",
+      "idOwner": 20,
+      "idUserUpdated": 20
+    }
+  },
+  {
+    "locationCode_normalized": "13p1-05-04",
+    "existing_id": 2460,
+    "new_id": 2622,
+    "raw_row": {
+      "locationCode": "13P1-05-04",
+      "locationType": 49,
+      "id": 2622,
+      "entity": null,
+      "idCol": null,
+      "guid": "F3823D3-B59F-E7C6-1846-9E3EAB16830",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2023-06-19 07:26:08",
+      "lastUpdated": "2023-06-19 07:26:08",
+      "idOwner": 649,
+      "idUserUpdated": 649
+    }
+  },
+  {
+    "locationCode_normalized": "loan",
+    "existing_id": 90,
+    "new_id": 2506,
+    "raw_row": {
+      "locationCode": "LOAN",
+      "locationType": 1595,
+      "id": 2506,
+      "entity": null,
+      "idCol": null,
+      "guid": "F816A81-EB9A-D009-0648-A9D0B346400",
+      "mysimOrder": 0,
+      "slug": null,
+      "enabled": true,
+      "created": "2021-10-14 12:42:00",
+      "lastUpdated": "2022-01-26 19:40:39",
+      "idOwner": 333,
+      "idUserUpdated": 630
+    }
+  }
+]

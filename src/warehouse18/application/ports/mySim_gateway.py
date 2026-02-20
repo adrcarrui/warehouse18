@@ -1,0 +1,6 @@
+from __future__ import annotations
+from typing import Protocol, Any, Optional
+
+class MySimGateway(Protocol):
+    def upsert_account(self, *, full_name: str, email: str, acronym: str, passport: str, mysim_id: int = 0) -> Any: ...
+    def get_account_by_email(self, *, email: str) -> Optional[dict]: ...

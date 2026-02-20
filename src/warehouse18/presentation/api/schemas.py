@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Generic, TypeVar, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+from dataclasses import dataclass
 
 class ORMBase(BaseModel):
     model_config = ConfigDict(
@@ -262,3 +263,13 @@ class RfidIngestIn(BaseModel):
     antenna: int
     rssi: Optional[int] = None
     ts: Optional[str] = None  
+
+@dataclass
+class MovementToUpload:
+    entity: str #Parts
+    idCol: str #id
+    movement_type: str
+    location_from: str | None
+    location_to: str | None
+    timestamp: datetime
+    rfid_event_id: str
