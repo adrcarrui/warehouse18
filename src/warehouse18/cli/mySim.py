@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import json
 from typing import Optional, Any
 
+import requests
 import typer
 from dotenv import load_dotenv
 from rich import print as rprint
@@ -25,9 +27,12 @@ app = typer.Typer(
 users_app = typer.Typer(help="Operaciones sobre usuarios (accounts).")
 parts_app = typer.Typer(help="Operaciones sobre parts y movimientos.")
 locations_app = typer.Typer(help="Operaciones sobre localizaciones.")
+movements_app = typer.Typer(help="Operaciones sobre movimientos (entity=movement).")
+
 app.add_typer(users_app, name="users")
 app.add_typer(parts_app, name="parts")
 app.add_typer(locations_app, name="locations")
+app.add_typer(movements_app, name="movements")
 
 console = Console()
 
@@ -66,6 +71,108 @@ def _resolve_part_db_id(api: MySimAdapter, part_db_id: Optional[int], part_code:
     raise typer.BadParameter("Debes indicar --part-db-id o --part-code (ej GEN-010838).")
 
 
+def _b64(s: str) -> str:
+    return base64.b64encode(s.encode("utf-8")).decode("ascii")
+
+
+def _cfg_pick_attr(cfg: object, candidates: list[str]) -> str | None:
+    """
+    Devuelve el valor del primer atributo existente (y truthy) en cfg.
+    """
+    for name in candidates:
+        if hasattr(cfg, name):
+            val = getattr(cfg, name)
+            if val:
+                return str(val)
+    return None
+
+
+def _cfg_debug_attrs(cfg: object) -> str:
+    """
+    Lista "bonita" de attrs públicos para debug.
+    """
+    names = sorted([n for n in dir(cfg) if not n.startswith("_")])
+    # no imprimimos métodos (callable) para no ensuciar demasiado
+    filtered = []
+    for n in names:
+        try:
+            v = getattr(cfg, n)
+            if callable(v):
+                continue
+            filtered.append(n)
+        except Exception:
+            continue
+    return ", ".join(filtered)
+
+
+# -----------------------------
+# MOVEMENTS (direct mySim query by movementId via extraQuery)
+# -----------------------------
+@movements_app.command("get")
+def movements_get(
+    movement_id: str = typer.Option(..., "--movement-id", "-m", help="Ej: M2020-051544"),
+    as_json: bool = typer.Option(True, "--json/--no-json", help="Imprimir JSON (por defecto sí)."),
+):
+    """
+    Recupera un movimiento de mySim por movementId usando extraQuery (Base64).
+
+    Hace:
+      POST /get?entity=movement&extraQuery=BASE64("t.movementId='M2020-051544'")
+    """
+    load_dotenv()
+    cfg = MySimConfig.from_env()
+
+    # Intenta detectar nombres típicos (sin asumir nada)
+    base_url = _cfg_pick_attr(cfg, ["base_url", "BASE_URL", "url", "host", "endpoint"])
+    token = _cfg_pick_attr(cfg, ["token", "api_token", "auth_token", "x_auth_token", "X_AUTH_TOKEN", "key", "apiKey"])
+
+    if not base_url or not token:
+        rprint("[red]No puedo construir la llamada a mySim porque faltan datos en MySimConfig.[/red]")
+        rprint(f"base_url detectado: {base_url!r}")
+        rprint(f"token detectado: {('***' if token else None)!r}")
+        rprint(f"Atributos disponibles en cfg: {_cfg_debug_attrs(cfg)}")
+        raise typer.Exit(code=2)
+
+    url = f"{base_url.rstrip('/')}/get"
+
+    # filtro tipo: t.movementId='M2020-051544'
+    filter_expr = f"t.movementId='{movement_id}'"
+    extra_query = _b64(filter_expr)
+
+    headers = {
+        "Accept": "application/json",
+        "X-AUTH-TOKEN": token,
+    }
+
+    params = {
+        "entity": "movement",
+        "extraQuery": extra_query,
+    }
+
+    try:
+        resp = requests.post(url, headers=headers, params=params, timeout=30)
+    except requests.RequestException as re:
+        rprint(f"[red]Request error[/red] {re}")
+        raise typer.Exit(code=1)
+
+    if not resp.ok:
+        rprint(f"[red]HTTP {resp.status_code}[/red]")
+        print(resp.text[:2000])
+        raise typer.Exit(code=1)
+
+    try:
+        data = resp.json()
+    except ValueError:
+        rprint("[red]La respuesta no es JSON[/red]")
+        print(resp.text[:2000])
+        raise typer.Exit(code=1)
+
+    if as_json:
+        print(_json(data))
+    else:
+        rprint("[green]OK[/green]")
+
+
 # -----------------------------
 # USERS
 # -----------------------------
@@ -86,7 +193,6 @@ def users_list(
             print(_json(rows))
             return
 
-        # muestra columnas típicas (ajusta si tu payload usa otros nombres)
         cols = ["id", "fullName", "email", "acronym"]
         _print_table(rows, cols, title=f"Users (limit={limit})")
 
@@ -150,12 +256,10 @@ def locations_list(
             print(_json(rows))
             return
 
-        # intentamos adivinar columnas típicas
         if not rows:
             rprint("[yellow]No hay localizaciones[/yellow]")
             return
 
-        # usa las claves reales del primer row
         cols = list(rows[0].keys())
         _print_table(rows, cols, title=f"Locations (entity={entity}, limit={limit})")
 
@@ -193,6 +297,7 @@ def parts_get(
         raise typer.Exit(code=1)
 
     print(_json(part))
+
 
 @parts_app.command("movements")
 def parts_movements(
@@ -249,14 +354,13 @@ def parts_last_movement(
             print(_json(e.payload))
         raise typer.Exit(code=1)
 
+
 @parts_app.command("upload-movement")
 def parts_upload_movement(
     part_db_id: int | None = typer.Option(None, "--part-db-id", help="ID interno (db id) del part."),
     part_code: str | None = typer.Option(None, "--part-code", help="Código partId (ej 235-0839)."),
 
-    # Tu enum interno (GI/GR/GT etc)
     movement_type: MovementType = typer.Option(..., "--type", help="Tipo de movimiento (lógica warehouse18)."),
-    # Override directo a mySim (p.ej. 58) para flows especiales como uninstall-install
     movement_type_id: int | None = typer.Option(
         None,
         "--movement-type-id",
@@ -267,7 +371,6 @@ def parts_upload_movement(
     origin: str | None = typer.Option(None, "--origin", help="sourceLocation (obligatorio para Good receipt)."),
     desc: str = typer.Option("", "--desc", help="movementDescription (obligatorio para Good tracking)."),
 
-    # Si quieres forzar el uso de localizaciones especiales, puedes pasar estas opciones
     dest_special: SpecialLocation | None = typer.Option(None, "--dest-special", help="Destino como localización especial."),
     origin_special: SpecialLocation | None = typer.Option(None, "--origin-special", help="Origen como localización especial."),
 
@@ -275,7 +378,6 @@ def parts_upload_movement(
     date: str | None = typer.Option(None, "--date", help="YYYY-MM-DD HH:MM (o HH:MM:SS) (opcional)."),
     as_json: bool = typer.Option(True, "--json/--no-json", help="Imprimir respuesta JSON."),
 
-    # --- Uninstall/install flow (mySim) ---
     uninstall_part_db_id: int | None = typer.Option(
         None,
         "--uninstall-part-db-id",
@@ -287,7 +389,6 @@ def parts_upload_movement(
         help="Código del part a desinstalar (ej 2806 o 235-0839).",
     ),
 
-    # Aliases para compatibilidad (typo incluido)
     uninstall_part: str | None = typer.Option(
         None,
         "--uninstall-part",
@@ -317,22 +418,14 @@ def parts_upload_movement(
 ):
     """
     Crea/sube un movimiento para un part, aplicando reglas del almacén.
-
-    Soporta el flow uninstall-install de mySim:
-    - movementType (id numérico) opcional via --movement-type-id
-    - uninstallPart (id interno) resuelto via --uninstall-part-db-id o --uninstall-part-code
-    - whyIsItUninstalled / destUninstalledPart / uninstalledBy
     """
     api = _bootstrap()
 
-    # 1) Resolver part principal (el "instalado" / el que recibe el movement)
     pid = _resolve_part_db_id(api, part_db_id, part_code)
 
-    # 2) Resolver destinos/orígenes con especiales
     final_dest = dest_special.value if dest_special else dest
     final_origin = origin_special.value if origin_special else origin
 
-    # 3) Resolver uninstall part: puede venir como id o como código (o alias typo)
     final_uninstall_code = uninstall_part_code or uninstall_part or unistall_part
 
     uninstall_part_id: int | None = None
@@ -344,7 +437,6 @@ def parts_upload_movement(
             raise typer.BadParameter(f"No se encontró uninstall partCode={final_uninstall_code} en mySim.")
         uninstall_part_id = found
 
-    # 4) Validación mínima del flow uninstall-install
     if uninstall_part_id is not None:
         missing = []
         if not why_uninstalled:
@@ -354,13 +446,8 @@ def parts_upload_movement(
         if uninstalled_by is None:
             missing.append("--uninstalled-by")
         if missing:
-            raise typer.BadParameter(
-                "Para desinstalar debes indicar también: " + ", ".join(missing)
-            )
+            raise typer.BadParameter("Para desinstalar debes indicar también: " + ", ".join(missing))
 
-    # 5) Construir MovementRequest (tu dominio)
-    #    Nota: aquí usamos campos "correctos" (uninstall_part_id, movement_type_id).
-    #    Si tu MovementRequest todavía no los tiene, tendrás que añadirlos (te indico abajo).
     req = MovementRequest(
         part_db_id=pid,
         movement_type=movement_type,
@@ -369,16 +456,12 @@ def parts_upload_movement(
         description=desc,
         done_by=done_by,
         date=date,
-
-        # COMPAT: MovementRequest actual usa 'unistall_part'
         unistall_part=str(uninstall_part_id) if uninstall_part_id is not None else None,
-
         why_is_it_uninstalled=why_uninstalled,
         dest_uninstalled_part=dest_uninstalled_part,
         uninstalled_by=uninstalled_by,
     )
 
-    # 6) Ejecutar
     try:
         resp = api.create_movement(req)
     except ValueError as ve:
@@ -390,11 +473,11 @@ def parts_upload_movement(
             print(_json(e.payload))
         raise typer.Exit(code=1)
 
-    # 7) Imprimir
     if as_json:
         print(_json(resp))
     else:
         rprint("[green]OK[/green] movimiento creado")
+
 
 def main():
     app()

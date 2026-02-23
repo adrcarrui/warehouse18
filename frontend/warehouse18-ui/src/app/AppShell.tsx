@@ -146,9 +146,9 @@ export function AppShell(props: {
         </aside>
 
         {/* Main */}
-        <main className="flex-1">
+        <main className="flex-1 bg-[var(--white-bg)]">
           {/* Header */}
-          <header className="sticky top-0 z-10 border-b border-slate-900 bg-slate-950/70 backdrop-blur">
+          <header className="sticky top-0 z-10 border-b  bg-slate-950/70 backdrop-blur">
             <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-4">
               <div className="min-w-0">
                 <div className="truncate text-lg font-semibold">{title}</div>

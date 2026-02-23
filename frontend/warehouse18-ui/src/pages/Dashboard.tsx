@@ -20,10 +20,10 @@ function StatCard(props: {
   const inner = (
     <div className="flex items-start justify-between gap-4">
       <div className="min-w-0">
-        <div className="text-xs font-medium text-slate-400">{props.title}</div>
+        <div className="text-xs font-medium text-white">{props.title}</div>
         <div className="mt-1 text-2xl font-semibold text-slate-100">{props.value}</div>
         {props.hint ? (
-          <div className="mt-1 text-xs text-slate-500">{props.hint}</div>
+          <div className="mt-1 text-xs text-white">{props.hint}</div>
         ) : null}
       </div>
       <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-2">
@@ -60,7 +60,12 @@ export default function DashboardPage() {
     { id: 2, type: "GT", desc: "Transfer between locations", when: "09:40", who: "System", loc: "Aisle → Shelf" },
     { id: 3, type: "GR", desc: "Good receipt", when: "08:05", who: "Adrian", loc: "Inbound → Aisle" },
   ];
-
+  const badgeFormySim =
+    stats.mySimstatus === "connected" ? (
+      <Badge variant="success">mySim Connected</Badge>
+    ) : (
+      <Badge variant="danger">mySim Disconnected</Badge>
+    );
   const badgeForRfid =
     stats.rfidStatus === "connected" ? (
       <Badge variant="success">RFID Connected</Badge>
@@ -71,13 +76,10 @@ export default function DashboardPage() {
   return (
     <AppShell
       title="Dashboard"
-      subtitle="Overview of warehouse activity"
       actions={
         <div className="flex items-center gap-2">
+          {badgeFormySim}
           {badgeForRfid}
-          <Link to="/movements">
-            <Button variant="secondary">View Movements</Button>
-          </Link>
         </div>
       }
     >
@@ -192,7 +194,7 @@ export default function DashboardPage() {
           <div className="mt-4 overflow-hidden rounded-xl border border-slate-800">
             <table className="w-full text-sm">
               <thead className="bg-slate-950">
-                <tr className="text-left text-xs text-slate-400">
+                <tr className="text-left text-xs text-white">
                   <th className="px-4 py-3">Time</th>
                   <th className="px-4 py-3">Type</th>
                   <th className="px-4 py-3">Description</th>
@@ -210,7 +212,7 @@ export default function DashboardPage() {
                       </span>
                     </td>
                     <td className="px-4 py-3 text-slate-200">{m.desc}</td>
-                    <td className="px-4 py-3 text-slate-400">{m.loc}</td>
+                    <td className="px-4 py-3 text-white">{m.loc}</td>
                     <td className="px-4 py-3 text-slate-400">{m.who}</td>
                   </tr>
                 ))}
