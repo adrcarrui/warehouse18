@@ -63,9 +63,10 @@ export function AppShell(props: {
         <aside
           className={cn(
             "sticky top-0 h-screen border-r border-blue-900 bg-[var(--blue-bg)] backdrop-blur",
-             //",
             "transition-all duration-200",
-            collapsed ? "w-[100px]" : "w-[260px]"
+            collapsed ? "w-[92px]" : "w-[260px]",
+            // en pantallas pequeñas, no hagas que el sidebar se coma el mundo
+            "hidden md:block"
           )}
         >
           {/* Brand */}
@@ -106,9 +107,7 @@ export function AppShell(props: {
             <div className="space-y-1">
               {NAV.map((it) => {
                 const active =
-                  it.href === "/"
-                    ? activeHref === "/"
-                    : activeHref.startsWith(it.href);
+                  it.href === "/" ? activeHref === "/" : activeHref.startsWith(it.href);
 
                 const Icon = it.icon;
 
@@ -125,13 +124,17 @@ export function AppShell(props: {
                     )}
                     title={collapsed ? it.label : undefined}
                   >
-                    <Icon className={cn("h-5 w-5", active ? "text-slate-100" : "text-slate-400 group-hover:text-slate-200")} />
+                    <Icon
+                      className={cn(
+                        "h-5 w-5",
+                        active ? "text-slate-100" : "text-slate-400 group-hover:text-slate-200"
+                      )}
+                    />
                     {!collapsed && (
                       <span className={cn("text-sm", active ? "text-slate-100" : "text-slate-300")}>
                         {it.label}
                       </span>
                     )}
-                    {/* Active indicator */}
                     <span
                       className={cn(
                         "ml-auto h-2 w-2 rounded-full",
@@ -146,12 +149,12 @@ export function AppShell(props: {
         </aside>
 
         {/* Main */}
-        <main className="flex-1 bg-[var(--white-bg)]">
+        <main className="min-w-0 flex-1 bg-[var(--white-bg)] text-zinc-900">
           {/* Header */}
-          <header className="sticky top-0 z-10 border-b  bg-slate-950/70 backdrop-blur">
-            <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-4">
+          <header className="sticky top-0 z-10 border-b bg-slate-950/70 backdrop-blur">
+            <div className="mx-auto flex w-full max-w-screen-2xl items-center justify-between gap-4 px-4 py-4 sm:px-6">
               <div className="min-w-0">
-                <div className="truncate text-lg font-semibold">{title}</div>
+                <div className="truncate text-lg font-semibold text-slate-100">{title}</div>
                 {subtitle ? (
                   <div className="truncate text-sm text-slate-400">{subtitle}</div>
                 ) : null}
@@ -161,7 +164,9 @@ export function AppShell(props: {
           </header>
 
           {/* Content */}
-          <div className="mx-auto max-w-6xl px-6 py-6">{children}</div>
+          <div className="mx-auto w-full max-w-screen-2xl px-4 py-6 sm:px-6">
+            {children}
+          </div>
         </main>
       </div>
     </div>

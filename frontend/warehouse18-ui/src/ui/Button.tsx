@@ -9,6 +9,7 @@ export function Button({
   variant = "primary",
   size = "md",
   className = "",
+  type = "button",
   ...props
 }: Props) {
   const base =

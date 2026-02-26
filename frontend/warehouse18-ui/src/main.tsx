@@ -5,12 +5,12 @@ import ItemsPage from "./pages/ItemsPage";
 import UsersPage from "./pages/UsersPage";
 import LocationsPage from "./pages/LocationsPage";
 import StockContainersPage from "./pages/StockContainersPage";
-import {MovementsPage} from "./pages/Movements/MovementsPage";
+import MovementsPage from "./pages/Movements/MovementsPage";
 import RFIDMonitorPage from "./pages/RFIDMonitorPage";
 import DashboardPage from "./pages/Dashboard";
 import "./index.css"
 
-/*
+
 function Home() {
   return (
     <div style={{ padding: 16, fontFamily: "system-ui" }}>
@@ -27,7 +27,7 @@ function Home() {
     </div>
   );
 }
-  */
+
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   //<React.StrictMode>

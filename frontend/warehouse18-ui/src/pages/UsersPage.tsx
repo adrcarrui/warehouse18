@@ -1,7 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { apiGet, apiJson } from "../api";
 import type { PageMeta, PageOut } from "../api";
 import { AppShell } from "../app/AppShell";
+
+import { Button } from "../ui/Button";
+import { Input } from "../ui/Input";
 
 type UserOut = {
   id: number;
@@ -24,7 +27,7 @@ type UserCreateIn = {
   role: string;
   department?: string | null;
   is_active?: boolean;
-  password_hash: string; // en tu modelo SQLAlchemy parece NOT NULL, mejor no jugar a la ruleta
+  password_hash: string;
   auth_provider?: string;
 };
 
@@ -46,17 +49,19 @@ function fmtDate(v?: string | null) {
 }
 
 export default function UsersPage() {
-  // filtros
-  const [q, setQ] = useState("");
-  const [role, setRole] = useState("");
-  const [department, setDepartment] = useState("");
-  const [status, setStatus] = useState<"active" | "inactive" | "all">("active");
+  // Column filters (Locations-style)
+  const [usernameFilter, setUsernameFilter] = useState("");
+  const [fullNameFilter, setFullNameFilter] = useState("");
+  const [emailFilter, setEmailFilter] = useState("");
+  const [roleFilter, setRoleFilter] = useState("");
+  const [departmentFilter, setDepartmentFilter] = useState("");
+  const [activeFilter, setActiveFilter] = useState<"active" | "inactive" | "all">("active");
 
-  // paginación
+  // paging
   const [page, setPage] = useState(1);
   const [pageSize] = useState(25);
 
-  // datos
+  // data
   const [rows, setRows] = useState<UserOut[]>([]);
   const [meta, setMeta] = useState<PageMeta>({
     page: 1,
@@ -68,6 +73,9 @@ export default function UsersPage() {
 
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // create modal
+  const [createOpen, setCreateOpen] = useState(false);
 
   // create form
   const [newUser, setNewUser] = useState<UserCreateIn>({
@@ -85,25 +93,40 @@ export default function UsersPage() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState<UserUpdateIn>({});
 
-  const isActiveParam = useMemo(() => {
-    if (status === "all") return undefined; // no filtra
-    return status === "active";
-  }, [status]);
+  const qCombined = useMemo(() => {
+    return [usernameFilter.trim(), fullNameFilter.trim(), emailFilter.trim(), roleFilter.trim(), departmentFilter.trim()]
+      .filter(Boolean)
+      .join(" ");
+  }, [usernameFilter, fullNameFilter, emailFilter, roleFilter, departmentFilter]);
+
+  const includeInactive = useMemo(() => activeFilter !== "active", [activeFilter]);
+
+  const pages = useMemo(() => {
+    const ps = meta.pageSize || pageSize || 25;
+    const t = meta.total || 0;
+    const computed = Math.max(1, Math.ceil(t / ps));
+    return meta.pages && meta.pages > 0 ? meta.pages : computed;
+  }, [meta.pages, meta.pageSize, meta.total, pageSize]);
 
   async function load(p: number) {
     setLoading(true);
     setErr(null);
     try {
       const { data, meta } = await apiGet<PageOut<UserOut>>("/api/users", {
-        q: q.trim() || undefined,
-        role: role.trim() || undefined,
-        department: department.trim() || undefined,
-        is_active: isActiveParam as any, // undefined => omit
+        q: qCombined || undefined,
+        include_inactive: includeInactive,
         page: p,
         page_size: pageSize,
       });
 
-      setRows(data.items);
+      let items = data.items;
+
+      // si el usuario pide SOLO inactivos, filtramos client-side
+      if (activeFilter === "inactive") {
+        items = items.filter((u) => !u.is_active);
+      }
+
+      setRows(items);
       setMeta(meta);
       setPage(p);
     } catch (e: any) {
@@ -113,13 +136,50 @@ export default function UsersPage() {
     }
   }
 
+  // Initial load (IMPORTANT)
   useEffect(() => {
     load(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const canPrev = !loading && meta.page > 1;
-  const canNext = !loading && meta.pages > 0 && meta.page < meta.pages;
+  // Debounced auto-search (only after first mount)
+  const debounceRef = useRef<number | null>(null);
+  const didMountRef = useRef(false);
+
+  useEffect(() => {
+    // avoid double-load on first render (we already did load(1) in the effect above)
+    if (!didMountRef.current) {
+      didMountRef.current = true;
+      return;
+    }
+
+    if (debounceRef.current) window.clearTimeout(debounceRef.current);
+
+    debounceRef.current = window.setTimeout(() => {
+      load(1);
+    }, 300);
+
+    return () => {
+      if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qCombined, activeFilter]);
+
+  function onFilterKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Enter") {
+      if (debounceRef.current) window.clearTimeout(debounceRef.current);
+      load(1);
+    }
+  }
+
+  function openCreateModal() {
+    setErr(null);
+    setCreateOpen(true);
+  }
+
+  function closeCreateModal() {
+    setCreateOpen(false);
+  }
 
   async function onCreate() {
     setErr(null);
@@ -144,7 +204,6 @@ export default function UsersPage() {
     try {
       await apiJson<UserOut>("POST", "/api/users", payload);
 
-      // reset mínimo
       setNewUser((u) => ({
         ...u,
         username: "",
@@ -154,6 +213,7 @@ export default function UsersPage() {
         password_hash: "",
       }));
 
+      setCreateOpen(false);
       await load(1);
     } catch (e: any) {
       setErr(e?.message ?? String(e));
@@ -193,7 +253,6 @@ export default function UsersPage() {
     if (editDraft.auth_provider !== undefined)
       body.auth_provider = (editDraft.auth_provider ?? "").toString().trim() || null;
 
-    // solo si lo rellenan
     if (editDraft.password_hash && editDraft.password_hash.trim()) {
       body.password_hash = editDraft.password_hash.trim();
     }
@@ -222,274 +281,371 @@ export default function UsersPage() {
     }
   }
 
+  function resetFilters() {
+    setUsernameFilter("");
+    setFullNameFilter("");
+    setEmailFilter("");
+    setRoleFilter("");
+    setDepartmentFilter("");
+    setActiveFilter("active");
+    if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    load(1);
+  }
+
   return (
-    <AppShell title="Users" subtitle= "Manage access and roles">
-    <div style={{ padding: 16, fontFamily: "system-ui" }}>
-      <h2 style={{ marginTop: 0 }}>Users</h2>
+    <AppShell
+      title="Users"
+      subtitle="Manage access and roles"
+      actions={
+        <div className="flex items-center gap-2">
+          <Button type="button" variant="outline" onClick={resetFilters} disabled={loading}>
+            Reset
+          </Button>
+          <Button type="button" variant="primary" onClick={openCreateModal} disabled={loading}>
+            + New user
+          </Button>
+        </div>
+      }
+    >
+      <div className="space-y-4">
+        {err && (
+          <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">Error: {err}</div>
+        )}
 
-      {/* Create */}
-      <div style={{ border: "1px solid #eee", borderRadius: 8, padding: 12, marginBottom: 14 }}>
-        <div style={{ fontWeight: 700, marginBottom: 8 }}>Create user</div>
+        {/* Table + Pagination (Locations-style) */}
+        <div className="rounded-xl border border-zinc-200 bg-white">
+          <div className="flex max-h-[750px] flex-col">
+            {/* Scroll area */}
+            <div className="relative flex-1 overflow-auto bg-white">
+              <table className="min-w-full border-separate border-spacing-0">
+                <thead className="bg-zinc-50">
+                  {/* Row 1: Titles */}
+                  <tr>
+                    {[
+                      "ID",
+                      "Username",
+                      "Full name",
+                      "Email",
+                      "Role",
+                      "Dept",
+                      "Active",
+                      "Auth",
+                      "Last login",
+                      "Actions",
+                    ].map((h) => (
+                      <th
+                        key={h}
+                        className="whitespace-nowrap border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-left text-xs font-semibold text-zinc-700"
+                      >
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
 
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
-          <input
-            value={newUser.username}
-            onChange={(e) => setNewUser((u) => ({ ...u, username: e.target.value }))}
-            placeholder="username *"
-            style={{ padding: 8, width: 180 }}
-          />
-          <input
-            value={newUser.full_name}
-            onChange={(e) => setNewUser((u) => ({ ...u, full_name: e.target.value }))}
-            placeholder="full name *"
-            style={{ padding: 8, width: 260 }}
-          />
-          <input
-            value={newUser.email ?? ""}
-            onChange={(e) => setNewUser((u) => ({ ...u, email: e.target.value }))}
-            placeholder="email"
-            style={{ padding: 8, width: 260 }}
-          />
-          <input
-            value={newUser.role}
-            onChange={(e) => setNewUser((u) => ({ ...u, role: e.target.value }))}
-            placeholder="role *"
-            style={{ padding: 8, width: 140 }}
-          />
-          <input
-            value={newUser.department ?? ""}
-            onChange={(e) => setNewUser((u) => ({ ...u, department: e.target.value }))}
-            placeholder="department"
-            style={{ padding: 8, width: 160 }}
-          />
-          <input
-            value={newUser.auth_provider ?? "local"}
-            onChange={(e) => setNewUser((u) => ({ ...u, auth_provider: e.target.value }))}
-            placeholder="auth_provider"
-            style={{ padding: 8, width: 140 }}
-          />
-          <input
-            value={newUser.password_hash}
-            onChange={(e) => setNewUser((u) => ({ ...u, password_hash: e.target.value }))}
-            placeholder="password_hash *"
-            style={{ padding: 8, width: 220 }}
-          />
-          <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <input
-              type="checkbox"
-              checked={!!newUser.is_active}
-              onChange={(e) => setNewUser((u) => ({ ...u, is_active: e.target.checked }))}
-            />
-            active
-          </label>
+                  {/* Row 2: Filters */}
+                  <tr>
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2" />
 
-          <button onClick={onCreate} disabled={loading}>
-            Create
-          </button>
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
+                      <Input
+                        value={usernameFilter}
+                        onChange={(e) => setUsernameFilter(e.target.value)}
+                        onKeyDown={onFilterKeyDown}
+                        placeholder="Filter username…"
+                      />
+                    </th>
+
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
+                      <Input
+                        value={fullNameFilter}
+                        onChange={(e) => setFullNameFilter(e.target.value)}
+                        onKeyDown={onFilterKeyDown}
+                        placeholder="Filter name…"
+                      />
+                    </th>
+
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
+                      <Input
+                        value={emailFilter}
+                        onChange={(e) => setEmailFilter(e.target.value)}
+                        onKeyDown={onFilterKeyDown}
+                        placeholder="Filter email…"
+                      />
+                    </th>
+
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
+                      <Input
+                        value={roleFilter}
+                        onChange={(e) => setRoleFilter(e.target.value)}
+                        onKeyDown={onFilterKeyDown}
+                        placeholder="Filter role…"
+                      />
+                    </th>
+
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
+                      <Input
+                        value={departmentFilter}
+                        onChange={(e) => setDepartmentFilter(e.target.value)}
+                        onKeyDown={onFilterKeyDown}
+                        placeholder="Filter dept…"
+                      />
+                    </th>
+
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
+                      <select
+                        className="h-10 w-full rounded-xl border border-zinc-200 bg-white px-3 text-sm"
+                        value={activeFilter}
+                        onChange={(e) => setActiveFilter(e.target.value as any)}
+                      >
+                        <option value="active">Active</option>
+                        <option value="inactive">Inactive</option>
+                        <option value="all">All</option>
+                      </select>
+                    </th>
+
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2" />
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2" />
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2" />
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {rows.map((u) => {
+                    const editing = editingId === u.id;
+
+                    return (
+                      <tr key={u.id} className="hover:bg-zinc-50 align-top">
+                        <td className="border-b border-zinc-100 px-3 py-2 text-sm font-medium text-black">{u.id}</td>
+                        <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">{u.username}</td>
+
+                        <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
+                          {editing ? (
+                            <input
+                              value={(editDraft.full_name ?? "") as any}
+                              onChange={(e) => setEditDraft((d) => ({ ...d, full_name: e.target.value }))}
+                              className="h-9 w-56 rounded-lg border border-zinc-200 bg-white px-3 text-sm"
+                            />
+                          ) : (
+                            u.full_name
+                          )}
+                        </td>
+
+                        <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
+                          {editing ? (
+                            <input
+                              value={(editDraft.email ?? "") as any}
+                              onChange={(e) => setEditDraft((d) => ({ ...d, email: e.target.value }))}
+                              className="h-9 w-64 rounded-lg border border-zinc-200 bg-white px-3 text-sm"
+                            />
+                          ) : (
+                            u.email ?? ""
+                          )}
+                        </td>
+
+                        <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
+                          {editing ? (
+                            <input
+                              value={(editDraft.role ?? "") as any}
+                              onChange={(e) => setEditDraft((d) => ({ ...d, role: e.target.value }))}
+                              className="h-9 w-32 rounded-lg border border-zinc-200 bg-white px-3 text-sm"
+                            />
+                          ) : (
+                            u.role
+                          )}
+                        </td>
+
+                        <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
+                          {editing ? (
+                            <input
+                              value={(editDraft.department ?? "") as any}
+                              onChange={(e) => setEditDraft((d) => ({ ...d, department: e.target.value }))}
+                              className="h-9 w-32 rounded-lg border border-zinc-200 bg-white px-3 text-sm"
+                            />
+                          ) : (
+                            u.department ?? ""
+                          )}
+                        </td>
+
+                        <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
+                          {editing ? (
+                            <label className="inline-flex items-center gap-2 text-sm text-zinc-700">
+                              <input
+                                type="checkbox"
+                                className="h-4 w-4 rounded border-zinc-300"
+                                checked={!!editDraft.is_active}
+                                onChange={(e) => setEditDraft((d) => ({ ...d, is_active: e.target.checked }))}
+                              />
+                              {editDraft.is_active ? "yes" : "no"}
+                            </label>
+                          ) : (
+                            u.is_active ? "yes" : "no"
+                          )}
+                        </td>
+
+                        <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
+                          {editing ? (
+                            <input
+                              value={(editDraft.auth_provider ?? "") as any}
+                              onChange={(e) => setEditDraft((d) => ({ ...d, auth_provider: e.target.value }))}
+                              className="h-9 w-28 rounded-lg border border-zinc-200 bg-white px-3 text-sm"
+                            />
+                          ) : (
+                            u.auth_provider
+                          )}
+                        </td>
+
+                        <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">{fmtDate(u.last_login_at)}</td>
+
+                        <td className="border-b border-zinc-100 px-3 py-2 text-sm">
+                          <div className="flex flex-wrap gap-2">
+                            {!editing ? (
+                              <>
+                                <Button type="button" variant="outline" size="sm" onClick={() => startEdit(u)} disabled={loading}>
+                                  Edit
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="danger"
+                                  size="sm"
+                                  onClick={() => deactivate(u.id)}
+                                  disabled={loading || !u.is_active}
+                                >
+                                  Deactivate
+                                </Button>
+                              </>
+                            ) : (
+                              <>
+                                <input
+                                  value={(editDraft.password_hash ?? "") as any}
+                                  onChange={(e) => setEditDraft((d) => ({ ...d, password_hash: e.target.value }))}
+                                  placeholder="password_hash (optional)"
+                                  className="h-9 w-56 rounded-lg border border-zinc-200 bg-white px-3 text-sm"
+                                />
+                                <Button type="button" variant="primary" size="sm" onClick={() => saveEdit(u.id)} disabled={loading}>
+                                  Save
+                                </Button>
+                                <Button type="button" variant="ghost" size="sm" onClick={cancelEdit} disabled={loading}>
+                                  Cancel
+                                </Button>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+
+                  {!loading && rows.length === 0 && (
+                    <tr>
+                      <td colSpan={10} className="px-3 py-6 text-sm text-zinc-600">
+                        No results
+                      </td>
+                    </tr>
+                  )}
+
+                  {loading && (
+                    <tr>
+                      <td colSpan={10} className="px-3 py-6 text-sm text-zinc-600">
+                        Loading…
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Footer pagination fixed */}
+            <div className="border-t border-zinc-200 bg-white px-3 py-2">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="text-sm text-zinc-600">
+                  Total <span className="font-semibold text-zinc-900">{meta.total}</span> • Page{" "}
+                  <span className="font-semibold text-zinc-900">{meta.page}</span> /{" "}
+                  <span className="font-semibold text-zinc-900">{pages}</span> • Size{" "}
+                  <span className="font-semibold text-zinc-900">{meta.pageSize}</span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button type="button" onClick={() => load(meta.page - 1)} disabled={loading || meta.page <= 1}>
+                    Prev
+                  </Button>
+                  <Button type="button" onClick={() => load(meta.page + 1)} disabled={loading || meta.page >= pages}>
+                    Next
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
-        {/*<div style={{ marginTop: 8, fontSize: 12, color: "#666" }}>
-          Nota: ahora mismo estás metiendo <b>password_hash</b> “a pelo”. Cuando implementes auth de verdad, esto se
-          cambia por password y hashing server-side. Humanidad en su máxima expresión.
-        </div>*/}
+        {/* Create Modal */}
+        {createOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+            <div className="w-full max-w-3xl rounded-2xl border border-zinc-200 bg-white p-5 shadow-xl">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-zinc-900">Create user</div>
+                  <div className="mt-1 text-xs text-zinc-500">username / full_name / role / password_hash</div>
+                </div>
+
+                <Button type="button" variant="ghost" onClick={closeCreateModal} disabled={loading}>
+                  Close
+                </Button>
+              </div>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-3">
+                <Input
+                  value={newUser.username}
+                  onChange={(e) => setNewUser((u) => ({ ...u, username: e.target.value }))}
+                  placeholder="username *"
+                />
+                <Input
+                  value={newUser.full_name}
+                  onChange={(e) => setNewUser((u) => ({ ...u, full_name: e.target.value }))}
+                  placeholder="full name *"
+                />
+                <Input value={newUser.email ?? ""} onChange={(e) => setNewUser((u) => ({ ...u, email: e.target.value }))} placeholder="email" />
+
+                <Input value={newUser.role} onChange={(e) => setNewUser((u) => ({ ...u, role: e.target.value }))} placeholder="role *" />
+                <Input value={newUser.department ?? ""} onChange={(e) => setNewUser((u) => ({ ...u, department: e.target.value }))} placeholder="department" />
+                <Input
+                  value={newUser.auth_provider ?? "local"}
+                  onChange={(e) => setNewUser((u) => ({ ...u, auth_provider: e.target.value }))}
+                  placeholder="auth_provider"
+                />
+
+                <Input
+                  value={newUser.password_hash}
+                  onChange={(e) => setNewUser((u) => ({ ...u, password_hash: e.target.value }))}
+                  placeholder="password_hash *"
+                />
+
+                <label className="flex items-center gap-2 text-sm text-zinc-700">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-zinc-300"
+                    checked={!!newUser.is_active}
+                    onChange={(e) => setNewUser((u) => ({ ...u, is_active: e.target.checked }))}
+                  />
+                  active
+                </label>
+              </div>
+
+              {err && (
+                <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">Error: {err}</div>
+              )}
+
+              <div className="mt-4 flex items-center justify-end gap-2">
+                <Button type="button" variant="outline" onClick={closeCreateModal} disabled={loading}>
+                  Cancel
+                </Button>
+                <Button type="button" variant="primary" onClick={onCreate} disabled={loading}>
+                  Create
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
-
-      {/* Filters */}
-      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Search (q)..."
-          style={{ padding: 8, width: 280 }}
-        />
-        <input
-          value={role}
-          onChange={(e) => setRole(e.target.value)}
-          placeholder="role..."
-          style={{ padding: 8, width: 140 }}
-        />
-        <input
-          value={department}
-          onChange={(e) => setDepartment(e.target.value)}
-          placeholder="department..."
-          style={{ padding: 8, width: 160 }}
-        />
-        <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          status
-          <select value={status} onChange={(e) => setStatus(e.target.value as any)} style={{ padding: 6 }}>
-            <option value="active">active</option>
-            <option value="inactive">inactive</option>
-            <option value="all">all</option>
-          </select>
-        </label>
-
-        <button onClick={() => load(1)} disabled={loading}>
-          Search
-        </button>
-      </div>
-
-      {err && <div style={{ color: "crimson", marginBottom: 12 }}>Error: {err}</div>}
-
-      <div style={{ marginBottom: 10, color: "#444" }}>
-        Total: {meta.total} | Page {meta.page}/{meta.pages} | Page size {meta.pageSize}
-      </div>
-
-      <div style={{ border: "1px solid #eee", borderRadius: 8, overflow: "hidden" }}>
-        <table width="100%" cellPadding={10} style={{ borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ textAlign: "left", background: "#fafafa", borderBottom: "1px solid #eee" }}>
-              <th>ID</th>
-              <th>Username</th>
-              <th>Full name</th>
-              <th>Email</th>
-              <th>Role</th>
-              <th>Dept</th>
-              <th>Active</th>
-              <th>Auth</th>
-              <th>Last login</th>
-              <th style={{ width: 220 }}>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((u) => {
-              const editing = editingId === u.id;
-
-              return (
-                <tr key={u.id} style={{ borderBottom: "1px solid #f2f2f2", verticalAlign: "top" }}>
-                  <td>{u.id}</td>
-
-                  <td>{u.username}</td>
-
-                  <td>
-                    {editing ? (
-                      <input
-                        value={(editDraft.full_name ?? "") as any}
-                        onChange={(e) => setEditDraft((d) => ({ ...d, full_name: e.target.value }))}
-                        style={{ padding: 6, width: 200 }}
-                      />
-                    ) : (
-                      u.full_name
-                    )}
-                  </td>
-
-                  <td>
-                    {editing ? (
-                      <input
-                        value={(editDraft.email ?? "") as any}
-                        onChange={(e) => setEditDraft((d) => ({ ...d, email: e.target.value }))}
-                        style={{ padding: 6, width: 240 }}
-                      />
-                    ) : (
-                      u.email ?? ""
-                    )}
-                  </td>
-
-                  <td>
-                    {editing ? (
-                      <input
-                        value={(editDraft.role ?? "") as any}
-                        onChange={(e) => setEditDraft((d) => ({ ...d, role: e.target.value }))}
-                        style={{ padding: 6, width: 120 }}
-                      />
-                    ) : (
-                      u.role
-                    )}
-                  </td>
-
-                  <td>
-                    {editing ? (
-                      <input
-                        value={(editDraft.department ?? "") as any}
-                        onChange={(e) => setEditDraft((d) => ({ ...d, department: e.target.value }))}
-                        style={{ padding: 6, width: 120 }}
-                      />
-                    ) : (
-                      u.department ?? ""
-                    )}
-                  </td>
-
-                  <td>
-                    {editing ? (
-                      <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                        <input
-                          type="checkbox"
-                          checked={!!editDraft.is_active}
-                          onChange={(e) => setEditDraft((d) => ({ ...d, is_active: e.target.checked }))}
-                        />
-                        {editDraft.is_active ? "yes" : "no"}
-                      </label>
-                    ) : (
-                      (u.is_active ? "yes" : "no")
-                    )}
-                  </td>
-
-                  <td>
-                    {editing ? (
-                      <input
-                        value={(editDraft.auth_provider ?? "") as any}
-                        onChange={(e) => setEditDraft((d) => ({ ...d, auth_provider: e.target.value }))}
-                        style={{ padding: 6, width: 110 }}
-                      />
-                    ) : (
-                      u.auth_provider
-                    )}
-                  </td>
-
-                  <td>{fmtDate(u.last_login_at)}</td>
-
-                  <td>
-                    {!editing ? (
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                        <button onClick={() => startEdit(u)} disabled={loading}>
-                          Edit
-                        </button>
-                        <button onClick={() => deactivate(u.id)} disabled={loading || !u.is_active}>
-                          Deactivate
-                        </button>
-                      </div>
-                    ) : (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                        <input
-                          value={(editDraft.password_hash ?? "") as any}
-                          onChange={(e) => setEditDraft((d) => ({ ...d, password_hash: e.target.value }))}
-                          placeholder="new password_hash (optional)"
-                          style={{ padding: 6, width: 210 }}
-                        />
-                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          <button onClick={() => saveEdit(u.id)} disabled={loading}>
-                            Save
-                          </button>
-                          <button onClick={cancelEdit} disabled={loading}>
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-
-            {!loading && rows.length === 0 && (
-              <tr>
-                <td colSpan={10} style={{ padding: 16, color: "#666" }}>
-                  No results
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-        <button onClick={() => load(page - 1)} disabled={!canPrev}>
-          Prev
-        </button>
-        <button onClick={() => load(page + 1)} disabled={!canNext}>
-          Next
-        </button>
-      </div>
-    </div>
     </AppShell>
   );
 }

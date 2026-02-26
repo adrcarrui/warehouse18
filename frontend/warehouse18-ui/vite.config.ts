@@ -7,9 +7,10 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": {
-        target: "http://localhost:8000", // <-- puerto de tu backend FastAPI
+        target: "http://127.0.0.1:8000",
         changeOrigin: true,
         secure: false,
+        rewrite: (path) => `/warehouse18${path}`, // /api/... -> /warehouse18/api/...
       },
     },
   },

@@ -1,128 +1,321 @@
-import React, { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "../../app/AppShell";
+import { apiGet } from "../../api";
+import type { PageMeta, PageOut } from "../../api";
+
 import { Button } from "../../ui/Button";
 import { Input } from "../../ui/Input";
 import { Badge } from "../../ui/Badge";
-import { Table } from "../../ui/Table";
 
-type MovementRow = {
+type MovementOut = {
   id: number;
-  type: "GI" | "GR" | "GT";
-  partCode: string;
-  origin: string;
-  dest: string;
-  qty: number;
-  at: string;
-  status: "ok" | "pending" | "error";
+  movement_type_id: number;
+  item_id?: number | null;
+  quantity?: string | number | null; // numeric suele venir como string
+  from_location_id?: number | null;
+  to_location_id?: number | null;
+  reference_type?: string | null;
+  reference_id?: number | null;
+  user_id?: number | null;
+  created_at: string; // timestamptz
+  notes?: string | null;
 };
 
-const seed: MovementRow[] = [
-  { id: 10021, type: "GI", partCode: "235-0839", origin: "1485", dest: "1", qty: 1, at: "2026-02-19 16:22", status: "ok" },
-  { id: 10022, type: "GT", partCode: "A-1001", origin: "Door", dest: "Aisle 1", qty: 3, at: "2026-02-19 16:25", status: "pending" },
-  { id: 10023, type: "GR", partCode: "B-9911", origin: "Vendor", dest: "1485", qty: 12, at: "2026-02-19 16:30", status: "error" },
-];
-
-function StatusBadge({ s }: { s: MovementRow["status"] }) {
-  const v = s === "ok" ? "success" : s === "pending" ? "warning" : "danger";
-  return <Badge variant={v}>{s}</Badge>;
+function fmtDate(v?: string | null) {
+  if (!v) return "";
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return v;
+  return d.toLocaleString();
 }
 
-export function MovementsPage() {
-  const [q, setQ] = useState("");
-  const [type, setType] = useState<"" | MovementRow["type"]>("");
+function toNumberOrUndefined(v: string): number | undefined {
+  const t = v.trim();
+  if (!t) return undefined;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : undefined;
+}
 
-  const rows = useMemo(() => {
-    return seed.filter((r) => {
-      const matchesQ =
-        !q ||
-        r.partCode.toLowerCase().includes(q.toLowerCase()) ||
-        r.origin.toLowerCase().includes(q.toLowerCase()) ||
-        r.dest.toLowerCase().includes(q.toLowerCase()) ||
-        String(r.id).includes(q);
+function qtyToText(q?: string | number | null) {
+  if (q == null) return "";
+  return typeof q === "number" ? String(q) : q;
+}
 
-      const matchesType = !type || r.type === type;
-      return matchesQ && matchesType;
-    });
-  }, [q, type]);
+export default function MovementsPage() {
+  // filtros por columna (IDs / ref / notas)
+  const [idFilter, setIdFilter] = useState("");
+  const [movementTypeIdFilter, setMovementTypeIdFilter] = useState("");
+  const [itemIdFilter, setItemIdFilter] = useState("");
+  const [fromIdFilter, setFromIdFilter] = useState("");
+  const [toIdFilter, setToIdFilter] = useState("");
+  const [refTypeFilter, setRefTypeFilter] = useState("");
+  const [refIdFilter, setRefIdFilter] = useState("");
+  const [userIdFilter, setUserIdFilter] = useState("");
+  const [notesFilter, setNotesFilter] = useState("");
+
+  // paging
+  const [page, setPage] = useState(1);
+  const [pageSize] = useState(25);
+
+  // data
+  const [rows, setRows] = useState<MovementOut[]>([]);
+  const [meta, setMeta] = useState<PageMeta>({
+    page: 1,
+    pageSize: 25,
+    total: 0,
+    pages: 0,
+    link: null,
+  });
+
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // q combinado (si tu backend soporta q)
+  const qCombined = useMemo(() => {
+    return [idFilter.trim(), refTypeFilter.trim(), notesFilter.trim()].filter(Boolean).join(" ");
+  }, [idFilter, refTypeFilter, notesFilter]);
+
+  const pages = useMemo(() => {
+    const ps = meta.pageSize || pageSize || 25;
+    const t = meta.total || 0;
+    const computed = Math.max(1, Math.ceil(t / ps));
+    return meta.pages && meta.pages > 0 ? meta.pages : computed;
+  }, [meta.pages, meta.pageSize, meta.total, pageSize]);
+
+  async function load(p: number) {
+    setLoading(true);
+    setErr(null);
+    try {
+      const { data, meta } = await apiGet<PageOut<MovementOut>>("/api/movements", {
+        q: qCombined || undefined,
+        movement_type_id: toNumberOrUndefined(movementTypeIdFilter),
+        item_id: toNumberOrUndefined(itemIdFilter),
+        from_location_id: toNumberOrUndefined(fromIdFilter),
+        to_location_id: toNumberOrUndefined(toIdFilter),
+        reference_type: refTypeFilter.trim() || undefined,
+        reference_id: toNumberOrUndefined(refIdFilter),
+        user_id: toNumberOrUndefined(userIdFilter),
+        page: p,
+        page_size: pageSize,
+      });
+
+      setRows(data.items);
+      setMeta(meta);
+      setPage(p);
+    } catch (e: any) {
+      setErr(e?.message ?? String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // initial load
+  useEffect(() => {
+    load(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // debounce search
+  const debounceRef = useRef<number | null>(null);
+  const didMountRef = useRef(false);
+
+  useEffect(() => {
+    if (!didMountRef.current) {
+      didMountRef.current = true;
+      return;
+    }
+    if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    debounceRef.current = window.setTimeout(() => load(1), 300);
+    return () => {
+      if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    qCombined,
+    movementTypeIdFilter,
+    itemIdFilter,
+    fromIdFilter,
+    toIdFilter,
+    refTypeFilter,
+    refIdFilter,
+    userIdFilter,
+    notesFilter,
+  ]);
+
+  function onFilterKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Enter") {
+      if (debounceRef.current) window.clearTimeout(debounceRef.current);
+      load(1);
+    }
+  }
+
+  function resetFilters() {
+    setIdFilter("");
+    setMovementTypeIdFilter("");
+    setItemIdFilter("");
+    setFromIdFilter("");
+    setToIdFilter("");
+    setRefTypeFilter("");
+    setRefIdFilter("");
+    setUserIdFilter("");
+    setNotesFilter("");
+    if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    load(1);
+  }
 
   return (
     <AppShell
       title="Movements"
+      subtitle="Movements from DB (public.movements)"
       actions={
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => alert("TODO: export")}>
-            Export
-          </Button>
-          <Button size="sm" onClick={() => alert("TODO: abrir modal/new movement")}>
-            + New
+          <Button type="button" variant="outline" onClick={resetFilters} disabled={loading}>
+            Reset
           </Button>
         </div>
       }
     >
       <div className="space-y-4">
-        {/* Header section */}
-        <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div className="min-w-0">
-              <div className="text-sm font-semibold text-zinc-900">Movement log</div>
-              <div className="text-sm text-zinc-500">Filter and review recent movements</div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <Badge>{rows.length} results</Badge>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setQ("");
-                  setType("");
-                }}
-              >
-                Reset
-              </Button>
-            </div>
+        {err && (
+          <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            Error: {err}
           </div>
+        )}
 
-          <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div className="w-full md:max-w-md">
-              <Input
-                placeholder="Search id, part, origin, dest..."
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-              />
+        <div className="rounded-xl border border-zinc-200 bg-white">
+          <div className="flex max-h-[750px] flex-col">
+            <div className="relative flex-1 overflow-auto bg-white">
+              <table className="min-w-full border-separate border-spacing-0">
+                <thead className="bg-zinc-50">
+                  <tr>
+                    {[
+                      "ID",
+                      "TypeId",
+                      "ItemId",
+                      "Qty",
+                      "FromId",
+                      "ToId",
+                      "RefType",
+                      "RefId",
+                      "UserId",
+                      "Created",
+                      "Notes",
+                    ].map((h) => (
+                      <th
+                        key={h}
+                        className="whitespace-nowrap border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-left text-xs font-semibold text-zinc-700"
+                      >
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+
+                  {/* filtros */}
+                  <tr>
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
+                      <Input value={idFilter} onChange={(e) => setIdFilter(e.target.value)} onKeyDown={onFilterKeyDown} placeholder="id…" />
+                    </th>
+
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
+                      <Input value={movementTypeIdFilter} onChange={(e) => setMovementTypeIdFilter(e.target.value)} onKeyDown={onFilterKeyDown} placeholder="movement_type_id…" />
+                    </th>
+
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
+                      <Input value={itemIdFilter} onChange={(e) => setItemIdFilter(e.target.value)} onKeyDown={onFilterKeyDown} placeholder="item_id…" />
+                    </th>
+
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2" />
+
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
+                      <Input value={fromIdFilter} onChange={(e) => setFromIdFilter(e.target.value)} onKeyDown={onFilterKeyDown} placeholder="from_location_id…" />
+                    </th>
+
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
+                      <Input value={toIdFilter} onChange={(e) => setToIdFilter(e.target.value)} onKeyDown={onFilterKeyDown} placeholder="to_location_id…" />
+                    </th>
+
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
+                      <Input value={refTypeFilter} onChange={(e) => setRefTypeFilter(e.target.value)} onKeyDown={onFilterKeyDown} placeholder="reference_type…" />
+                    </th>
+
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
+                      <Input value={refIdFilter} onChange={(e) => setRefIdFilter(e.target.value)} onKeyDown={onFilterKeyDown} placeholder="reference_id…" />
+                    </th>
+
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
+                      <Input value={userIdFilter} onChange={(e) => setUserIdFilter(e.target.value)} onKeyDown={onFilterKeyDown} placeholder="user_id…" />
+                    </th>
+
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2" />
+
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
+                      <Input value={notesFilter} onChange={(e) => setNotesFilter(e.target.value)} onKeyDown={onFilterKeyDown} placeholder="notes…" />
+                    </th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {rows.map((m) => (
+                    <tr key={m.id} className="hover:bg-zinc-50">
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm font-medium text-black tabular-nums">{m.id}</td>
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">{m.movement_type_id}</td>
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">{m.item_id ?? ""}</td>
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">{qtyToText(m.quantity)}</td>
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">{m.from_location_id ?? ""}</td>
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">{m.to_location_id ?? ""}</td>
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">{m.reference_type ?? ""}</td>
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">{m.reference_id ?? ""}</td>
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">{m.user_id ?? ""}</td>
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-zinc-600">{fmtDate(m.created_at)}</td>
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">{m.notes ?? ""}</td>
+                    </tr>
+                  ))}
+
+                  {!loading && rows.length === 0 && (
+                    <tr>
+                      <td colSpan={11} className="px-3 py-6 text-sm text-zinc-600">
+                        No results
+                      </td>
+                    </tr>
+                  )}
+
+                  {loading && (
+                    <tr>
+                      <td colSpan={11} className="px-3 py-6 text-sm text-zinc-600">
+                        Loading…
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
-              <Button variant={type === "" ? "primary" : "secondary"} size="sm" onClick={() => setType("")}>
-                All
-              </Button>
-              <Button variant={type === "GI" ? "primary" : "secondary"} size="sm" onClick={() => setType("GI")}>
-                GI
-              </Button>
-              <Button variant={type === "GR" ? "primary" : "secondary"} size="sm" onClick={() => setType("GR")}>
-                GR
-              </Button>
-              <Button variant={type === "GT" ? "primary" : "secondary"} size="sm" onClick={() => setType("GT")}>
-                GT
-              </Button>
+            {/* Footer paginación */}
+            <div className="border-t border-zinc-200 bg-white px-3 py-2">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="text-sm text-zinc-600">
+                  Total <span className="font-semibold text-zinc-900">{meta.total}</span> • Page{" "}
+                  <span className="font-semibold text-zinc-900">{meta.page}</span> /{" "}
+                  <span className="font-semibold text-zinc-900">{pages}</span> • Size{" "}
+                  <span className="font-semibold text-zinc-900">{meta.pageSize}</span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button type="button" onClick={() => load(meta.page - 1)} disabled={loading || meta.page <= 1}>
+                    Prev
+                  </Button>
+                  <Button type="button" onClick={() => load(meta.page + 1)} disabled={loading || meta.page >= pages}>
+                    Next
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            {/* mini indicador */}
+            <div className="px-3 pb-2">
+              <Badge>{rows.length} rows</Badge>
             </div>
           </div>
         </div>
-
-        {/* Table */}
-        <Table
-          headers={["ID", "Type", "Part", "Origin", "Dest", "Qty", "At", "Status"]}
-          rows={rows.map((r) => [
-            <span className="font-semibold tabular-nums">{r.id}</span>,
-            <Badge>{r.type}</Badge>,
-            <span className="font-medium text-zinc-900">{r.partCode}</span>,
-            <span className="text-zinc-700">{r.origin}</span>,
-            <span className="text-zinc-700">{r.dest}</span>,
-            <span className="tabular-nums">{r.qty}</span>,
-            <span className="text-zinc-500">{r.at}</span>,
-            <StatusBadge s={r.status} />,
-          ])}
-        />
       </div>
     </AppShell>
   );

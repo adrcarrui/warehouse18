@@ -62,13 +62,21 @@ export async function apiGet<T>(
 
   const data = (await res.json()) as T;
 
-  const meta: PageMeta = {
-    page: getNumberHeader(res.headers, "x-page", 1),
-    pageSize: getNumberHeader(res.headers, "x-page-size", 50),
-    total: getNumberHeader(res.headers, "x-total-count", 0),
-    pages: getNumberHeader(res.headers, "x-total-pages", 0),
-    link: res.headers.get("link"),
-  };
+const pageH = getNumberHeader(res.headers, "x-page", NaN);
+const pageSizeH = getNumberHeader(res.headers, "x-page-size", NaN);
+const totalH = getNumberHeader(res.headers, "x-total-count", NaN);
+const pagesH = getNumberHeader(res.headers, "x-total-pages", NaN);
+
+// Si CORS no expone headers, caeremos aquí y tomamos del body si existe
+const anyData = data as any;
+
+const meta: PageMeta = {
+  page: Number.isFinite(pageH) ? pageH : (anyData?.page ?? 1),
+  pageSize: Number.isFinite(pageSizeH) ? pageSizeH : (anyData?.page_size ?? 50),
+  total: Number.isFinite(totalH) ? totalH : (anyData?.total ?? 0),
+  pages: Number.isFinite(pagesH) ? pagesH : (anyData?.pages ?? 0),
+  link: res.headers.get("link"),
+};
 
   return { data, meta };
 }

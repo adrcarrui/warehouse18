@@ -3,6 +3,9 @@ import { apiDelete, apiGet, apiPatch, apiPost } from "../api";
 import type { PageMeta, PageOut } from "../api";
 import { AppShell } from "../app/AppShell";
 
+import { Button } from "../ui/Button";
+import { Input } from "../ui/Input";
+
 type LocationOut = {
   id: number;
   code: string;
@@ -24,23 +27,17 @@ type LocationUpdateIn = Partial<Omit<LocationCreateIn, "code">> & {
   is_active?: boolean;
 };
 
-function fieldRow(label: string, el: React.ReactNode) {
-  return (
-    <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 10, alignItems: "center" }}>
-      <div style={{ color: "#444", fontSize: 13 }}>{label}</div>
-      <div>{el}</div>
-    </div>
-  );
-}
-
 export default function LocationsPage() {
-  const [q, setQ] = useState("");
-  const [includeInactive, setIncludeInactive] = useState(false);
-  const [parentId, setParentId] = useState<string>("");
+  // Column filters
+  const [codeFilter, setCodeFilter] = useState("");
+  const [nameFilter, setNameFilter] = useState("");
+  const [activeFilter, setActiveFilter] = useState<"active" | "inactive" | "all">("active");
 
+  // paging
   const [page, setPage] = useState(1);
   const [pageSize] = useState(25);
 
+  // data
   const [rows, setRows] = useState<LocationOut[]>([]);
   const [meta, setMeta] = useState<PageMeta>({
     page: 1,
@@ -66,26 +63,31 @@ export default function LocationsPage() {
     is_active: true,
   });
 
-  const parentIdNum = useMemo(() => {
-    const v = parentId.trim();
-    if (!v) return undefined;
-    const n = Number(v);
-    return Number.isFinite(n) ? n : undefined;
-  }, [parentId]);
+  const includeInactive = activeFilter !== "active";
+
+  const qCombined = useMemo(() => {
+    return [codeFilter.trim(), nameFilter.trim()].filter(Boolean).join(" ");
+  }, [codeFilter, nameFilter]);
 
   async function load(p: number) {
     setLoading(true);
     setErr(null);
     try {
       const { data, meta } = await apiGet<PageOut<LocationOut>>("/api/locations", {
-        q: q.trim() || undefined,
+        q: qCombined || undefined,
         include_inactive: includeInactive,
-        parent_id: parentIdNum ?? undefined,
         page: p,
         page_size: pageSize,
       });
 
-      setRows(data.items);
+      // Backend likely only supports include/exclude inactive.
+      // If the user explicitly wants ONLY inactive, filter client-side.
+      let items = data.items;
+      if (activeFilter === "inactive") {
+        items = items.filter((x) => !x.is_active);
+      }
+
+      setRows(items);
       setMeta(meta);
       setPage(p);
     } catch (e: any) {
@@ -99,9 +101,6 @@ export default function LocationsPage() {
     load(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const canPrev = !loading && meta.page > 1;
-  const canNext = !loading && meta.pages > 0 && meta.page < meta.pages;
 
   function openCreate() {
     setMode("create");
@@ -186,189 +185,224 @@ export default function LocationsPage() {
     }
   }
 
+  // If your Title row height is not exactly 40px, adjust this number:
+  // - try 42 or 44 if you see overlap.
+  const FILTER_ROW_TOP = "32px";
+
+const pages = useMemo(() => {
+  const ps = meta.pageSize || pageSize || 25;
+  const t = meta.total || 0;
+  const computed = Math.max(1, Math.ceil(t / ps));
+  return meta.pages && meta.pages > 0 ? meta.pages : computed;
+}, [meta.pages, meta.pageSize, meta.total, pageSize]);
+
   return (
-    <AppShell title="Locations" subtitle="Manage locations">
-    <div style={{ padding: 16, fontFamily: "system-ui" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-        <h2 style={{ marginTop: 0, marginBottom: 0 }}>Locations</h2>
-        <button onClick={openCreate}>+ New location</button>
-      </div>
+    <AppShell
+      title="Locations"
+      subtitle="Manage locations"
+      actions={
+        <Button variant="primary" onClick={openCreate}>
+          + New location
+        </Button>
+      }
+    >
+      <div className="space-y-4">
+        {err && (
+          <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">Error: {err}</div>
+        )}
 
-      <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 12, marginBottom: 12, flexWrap: "wrap" }}>
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Search (q) by code/name..."
-          style={{ padding: 8, width: 320 }}
-        />
+        {/* Table */}
+        <div className="rounded-xl border border-zinc-200 bg-white">
+          <div className="relative max-h-[750px] overflow-auto bg-white">
+            <table className="min-w-full border-separate border-spacing-0 [table-layout:fixed]">
+              <thead>
+                {/* Row 1: Titles */}
+                <tr>
+                  {["ID", "Code", "Name", "Active", "Actions"].map((h) => (
+                    <th
+                      key={h}
+                      className="sticky top-0 z-30 whitespace-nowrap border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-left text-xs font-semibold text-zinc-700"
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
 
-        <input
-          value={parentId}
-          onChange={(e) => setParentId(e.target.value)}
-          placeholder="parent_id (optional)"
-          style={{ padding: 8, width: 180 }}
-        />
+                {/* Row 2: Filters */}
+                <tr>
+                  <th
+                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
+                    style={{ top: FILTER_ROW_TOP }}
+                  />
+                  <th
+                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
+                    style={{ top: FILTER_ROW_TOP }}
+                  >
+                    <Input value={codeFilter} onChange={(e) => setCodeFilter(e.target.value)} placeholder="Code…" />
+                  </th>
+                  <th
+                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
+                    style={{ top: FILTER_ROW_TOP }}
+                  >
+                    <Input value={nameFilter} onChange={(e) => setNameFilter(e.target.value)} placeholder="Name…" />
+                  </th>
+                  <th
+                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
+                    style={{ top: FILTER_ROW_TOP }}
+                  >
+                    <select
+                      className="h-10 w-full rounded-xl border border-zinc-200 bg-white px-3 text-sm"
+                      value={activeFilter}
+                      onChange={(e) => setActiveFilter(e.target.value as any)}
+                    >
+                      <option value="active">Active</option>
+                      <option value="inactive">Inactive</option>
+                      <option value="all">All</option>
+                    </select>
+                  </th>
+                  <th
+                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
+                    style={{ top: FILTER_ROW_TOP }}
+                  >
+                    <div className="flex justify-end">
+                      <Button variant="outline" onClick={() => load(1)} disabled={loading}>
+                        Search
+                      </Button>
+                    </div>
+                  </th>
+                </tr>
+              </thead>
 
-        <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <input
-            type="checkbox"
-            checked={includeInactive}
-            onChange={(e) => setIncludeInactive(e.target.checked)}
-          />
-          include inactive
-        </label>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.id} className="hover:bg-zinc-50">
+                    <td className="border-b border-zinc-100 px-3 py-2 text-sm font-medium text-black">{r.id}</td>
+                    <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">{r.code}</td>
+                    <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">{r.name}</td>
+                    <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">{r.is_active ? "yes" : "no"}</td>
+                    <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
+                      <div className="flex flex-wrap gap-2">
+                        <Button variant="outline" size="sm" onClick={() => openEdit(r)}>
+                          Edit
+                        </Button>
+                        <Button variant="danger" size="sm" onClick={() => deactivate(r)} disabled={!r.is_active}>
+                          Deactivate
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
 
-        <button onClick={() => load(1)} disabled={loading}>
-          Search
-        </button>
-      </div>
+                {!loading && rows.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="px-3 py-6 text-sm text-zinc-600">
+                      No results
+                    </td>
+                  </tr>
+                )}
 
-      {err && <div style={{ color: "crimson", marginBottom: 12 }}>Error: {err}</div>}
+                {loading && (
+                  <tr>
+                    <td colSpan={5} className="px-3 py-6 text-sm text-zinc-600">
+                      Loading…
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
 
-      <div style={{ marginBottom: 10, color: "#444" }}>
-        Total: {meta.total} | Page {meta.page}/{meta.pages} | Page size {meta.pageSize}
-      </div>
-
-      <div style={{ border: "1px solid #eee", borderRadius: 8, overflow: "hidden" }}>
-        <table width="100%" cellPadding={10} style={{ borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ textAlign: "left", background: "#fafafa", borderBottom: "1px solid #eee" }}>
-              <th>ID</th>
-              <th>Code</th>
-              <th>Name</th>
-              <th>Type</th>
-              <th>Parent</th>
-              <th>Active</th>
-              <th style={{ width: 220 }}>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.id} style={{ borderBottom: "1px solid #f2f2f2" }}>
-                <td>{r.id}</td>
-                <td>{r.code}</td>
-                <td>{r.name}</td>
-                <td>{r.type}</td>
-                <td>{r.parent_id ?? ""}</td>
-                <td>{r.is_active ? "yes" : "no"}</td>
-                <td>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button onClick={() => openEdit(r)}>Edit</button>
-                    <button onClick={() => deactivate(r)} disabled={!r.is_active}>
-                      Deactivate
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-
-            {!loading && rows.length === 0 && (
-              <tr>
-                <td colSpan={7} style={{ padding: 16, color: "#666" }}>
-                  No results
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-        <button onClick={() => load(page - 1)} disabled={!canPrev}>
-          Prev
-        </button>
-        <button onClick={() => load(page + 1)} disabled={!canNext}>
-          Next
-        </button>
-      </div>
-
-      {open && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.25)",
-            display: "grid",
-            placeItems: "center",
-            padding: 16,
-          }}
-          onMouseDown={(e) => {
-            // click outside closes
-            if (e.target === e.currentTarget) closeModal();
-          }}
-        >
-          <div style={{ width: 560, maxWidth: "100%", background: "white", borderRadius: 12, padding: 16 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-              <h3 style={{ margin: 0 }}>
-                {mode === "create" ? "Create location" : `Edit location #${editing?.id}`}
-              </h3>
-              <button onClick={closeModal}>X</button>
+        {/* Pagination (bottom) */}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-sm text-zinc-600">
+              Total <span className="font-semibold text-zinc-900">{meta.total}</span> • Page{" "}
+              <span className="font-semibold text-zinc-900">{meta.page}</span> /{" "}
+              <span className="font-semibold text-zinc-900">{pages}</span> • Size{" "}
+              <span className="font-semibold text-zinc-900">{meta.pageSize}</span>
             </div>
 
-            <div style={{ display: "grid", gap: 12, marginTop: 14 }}>
-              {fieldRow(
-                "Code",
-                <input
-                  value={form.code}
-                  disabled={mode === "edit"}
-                  onChange={(e) => setForm((s) => ({ ...s, code: e.target.value }))}
-                  style={{ padding: 8, width: "100%", opacity: mode === "edit" ? 0.7 : 1 }}
-                />
-              )}
+            <div className="flex items-center gap-2">
+              <Button onClick={() => load(meta.page - 1)} disabled={loading || meta.page <= 1}>
+                Prev
+              </Button>
+              <Button onClick={() => load(meta.page + 1)} disabled={loading || meta.page >= pages}>
+                Next
+              </Button>
+          </div>
+        </div>
 
-              {fieldRow(
-                "Name",
-                <input
-                  value={form.name}
-                  onChange={(e) => setForm((s) => ({ ...s, name: e.target.value }))}
-                  style={{ padding: 8, width: "100%" }}
-                />
-              )}
+        {/* Modal */}
+        {open && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+            <div className="w-full max-w-xl rounded-2xl border border-zinc-200 bg-white p-5 shadow-xl">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-zinc-900">
+                    {mode === "create" ? "Create location" : `Edit location #${editing?.id}`}
+                  </div>
+                  <div className="mt-1 text-xs text-zinc-500">code / name / type / parent_id</div>
+                </div>
 
-              {fieldRow(
-                "Type",
-                <input
-                  value={form.type}
-                  onChange={(e) => setForm((s) => ({ ...s, type: e.target.value }))}
-                  style={{ padding: 8, width: "100%" }}
-                />
-              )}
-
-              {fieldRow(
-                "Parent ID",
-                <input
-                  value={form.parent_id}
-                  onChange={(e) => setForm((s) => ({ ...s, parent_id: e.target.value }))}
-                  placeholder="(empty = no parent)"
-                  style={{ padding: 8, width: "100%" }}
-                />
-              )}
-
-              {fieldRow(
-                "Active",
-                <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <input
-                    type="checkbox"
-                    checked={form.is_active}
-                    onChange={(e) => setForm((s) => ({ ...s, is_active: e.target.checked }))}
-                  />
-                  is_active
-                </label>
-              )}
-
-              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 6 }}>
-                <button onClick={closeModal}>Cancel</button>
-                <button onClick={submit}>{mode === "create" ? "Create" : "Save"}</button>
+                <Button variant="ghost" onClick={closeModal}>
+                  Close
+                </Button>
               </div>
 
-              <div style={{ color: "#666", fontSize: 12 }}>
-                Nota: “Deactivate” hace soft-delete (is_active=false). Editar permite cambiar parent_id (evita self-parent).
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <Input
+                  value={form.code}
+                  onChange={(e) => setForm((f) => ({ ...f, code: e.target.value }))}
+                  placeholder="code *"
+                  disabled={mode === "edit"}
+                />
+                <Input
+                  value={form.type}
+                  onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))}
+                  placeholder="type *"
+                />
+                <div className="md:col-span-2">
+                  <Input
+                    value={form.name}
+                    onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                    placeholder="name *"
+                  />
+                </div>
+                <Input
+                  value={form.parent_id}
+                  onChange={(e) => setForm((f) => ({ ...f, parent_id: e.target.value }))}
+                  placeholder="parent_id (optional)"
+                />
+
+                <label className="flex items-center gap-2 text-sm text-zinc-700">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-zinc-300"
+                    checked={!!form.is_active}
+                    onChange={(e) => setForm((f) => ({ ...f, is_active: e.target.checked }))}
+                  />
+                  active
+                </label>
+              </div>
+
+              {err && (
+                <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                  Error: {err}
+                </div>
+              )}
+
+              <div className="mt-4 flex items-center justify-end gap-2">
+                <Button variant="outline" onClick={closeModal}>
+                  Cancel
+                </Button>
+                <Button variant="primary" onClick={submit}>
+                  {mode === "create" ? "Create" : "Save"}
+                </Button>
               </div>
             </div>
           </div>
-        </div>
-      )}
-    </div>
+        )}
+      </div>
     </AppShell>
   );
 }

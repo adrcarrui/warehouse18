@@ -44,6 +44,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Total-Count", "X-Page", "X-Page-Size", "X-Total-Pages", "Link"],
 )
 
 app.include_router(users_router, prefix=settings.api_prefix)
