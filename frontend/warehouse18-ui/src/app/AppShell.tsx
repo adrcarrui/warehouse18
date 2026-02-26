@@ -9,6 +9,7 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
+  Radio,
 } from "lucide-react";
 import { cn } from "../lib/cn";
 
@@ -24,6 +25,7 @@ const NAV: NavItem[] = [
   { label: "Movements", href: "/movements", icon: ArrowLeftRight },
   { label: "Locations", href: "/locations", icon: MapPin },
   { label: "Users", href: "/users", icon: Users },
+  { label: "RFID Monitor", href: "/rfid-monitor", icon: Radio },
   { label: "Settings", href: "/settings", icon: Settings },
 ];
 

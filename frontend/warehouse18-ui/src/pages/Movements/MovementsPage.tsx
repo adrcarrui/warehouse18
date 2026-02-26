@@ -20,7 +20,11 @@ type MovementOut = {
   created_at: string; // timestamptz
   notes?: string | null;
 };
-
+type MovementTypeOut = {
+  id: number;
+  code: string;
+  name: string;
+};
 function fmtDate(v?: string | null) {
   if (!v) return "";
   const d = new Date(v);
@@ -43,7 +47,7 @@ function qtyToText(q?: string | number | null) {
 export default function MovementsPage() {
   // filtros por columna (IDs / ref / notas)
   const [idFilter, setIdFilter] = useState("");
-  const [movementTypeIdFilter, setMovementTypeIdFilter] = useState("");
+  const [movementTypeFilter, setMovementTypeFilter] = useState("");
   const [itemIdFilter, setItemIdFilter] = useState("");
   const [fromIdFilter, setFromIdFilter] = useState("");
   const [toIdFilter, setToIdFilter] = useState("");
@@ -51,6 +55,7 @@ export default function MovementsPage() {
   const [refIdFilter, setRefIdFilter] = useState("");
   const [userIdFilter, setUserIdFilter] = useState("");
   const [notesFilter, setNotesFilter] = useState("");
+  const [mtById, setMtById] = useState<Record<number, MovementTypeOut>>({});
 
   // paging
   const [page, setPage] = useState(1);
@@ -81,13 +86,33 @@ export default function MovementsPage() {
     return meta.pages && meta.pages > 0 ? meta.pages : computed;
   }, [meta.pages, meta.pageSize, meta.total, pageSize]);
 
+  async function loadMovementTypes() {
+    try {
+      const { data } = await apiGet<MovementTypeOut[]>("/api/movement-types");
+      const map: Record<number, MovementTypeOut> = {};
+      for (const mt of data) map[mt.id] = mt;
+      setMtById(map);
+    } catch {
+      // si falla, no pasa nada: seguiremos mostrando el id
+      setMtById({});
+    }
+  }
   async function load(p: number) {
     setLoading(true);
     setErr(null);
     try {
       const { data, meta } = await apiGet<PageOut<MovementOut>>("/api/movements", {
         q: qCombined || undefined,
-        movement_type_id: toNumberOrUndefined(movementTypeIdFilter),
+        movement_type_id: (() => {
+          const search = movementTypeFilter.trim().toLowerCase();
+          if (!search) return undefined;
+
+          const found = Object.values(mtById).find(
+            (mt) => mt.name.toLowerCase().includes(search)
+          );
+
+          return found?.id;
+        })(),
         item_id: toNumberOrUndefined(itemIdFilter),
         from_location_id: toNumberOrUndefined(fromIdFilter),
         to_location_id: toNumberOrUndefined(toIdFilter),
@@ -108,11 +133,13 @@ export default function MovementsPage() {
     }
   }
 
-  // initial load
-  useEffect(() => {
-    load(1);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+useEffect(() => {
+  (async () => {
+    await loadMovementTypes();
+    await load(1);
+  })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
 
   // debounce search
   const debounceRef = useRef<number | null>(null);
@@ -131,7 +158,7 @@ export default function MovementsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     qCombined,
-    movementTypeIdFilter,
+    movementTypeFilter,
     itemIdFilter,
     fromIdFilter,
     toIdFilter,
@@ -139,6 +166,7 @@ export default function MovementsPage() {
     refIdFilter,
     userIdFilter,
     notesFilter,
+    Object.keys(mtById).length,
   ]);
 
   function onFilterKeyDown(e: React.KeyboardEvent) {
@@ -150,7 +178,7 @@ export default function MovementsPage() {
 
   function resetFilters() {
     setIdFilter("");
-    setMovementTypeIdFilter("");
+    setMovementTypeFilter("");
     setItemIdFilter("");
     setFromIdFilter("");
     setToIdFilter("");
@@ -216,7 +244,7 @@ export default function MovementsPage() {
                     </th>
 
                     <th className="border-b border-zinc-200 bg-white px-3 py-2">
-                      <Input value={movementTypeIdFilter} onChange={(e) => setMovementTypeIdFilter(e.target.value)} onKeyDown={onFilterKeyDown} placeholder="movement_type_id…" />
+                      <Input value={movementTypeFilter} onChange={(e) => setMovementTypeFilter(e.target.value)} onKeyDown={onFilterKeyDown} placeholder="movement_type_name…" />
                     </th>
 
                     <th className="border-b border-zinc-200 bg-white px-3 py-2">
@@ -257,7 +285,7 @@ export default function MovementsPage() {
                   {rows.map((m) => (
                     <tr key={m.id} className="hover:bg-zinc-50">
                       <td className="border-b border-zinc-100 px-3 py-2 text-sm font-medium text-black tabular-nums">{m.id}</td>
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">{m.movement_type_id}</td>
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">{mtById[m.movement_type_id]?.name ?? `#${m.movement_type_id}`}</td>{/*{m.movement_type_id}</td>*/}
                       <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">{m.item_id ?? ""}</td>
                       <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">{qtyToText(m.quantity)}</td>
                       <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">{m.from_location_id ?? ""}</td>

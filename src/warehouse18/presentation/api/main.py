@@ -28,6 +28,9 @@ from warehouse18.presentation.api.routes.movement_types import router as movemen
 from warehouse18.presentation.api.routes.movements import router as movements_router
 from warehouse18.presentation.api.routes.rfid_events import router as rfid_events_router
 from warehouse18.presentation.api.routes.rfid_ingest import router as rfid_ingest_router
+from warehouse18.presentation.api.routes.settings import router as settings_router
+
+from warehouse18.application.settings_service import SettingsService
 
 app = FastAPI(
     title="Warehouse18 API",
@@ -57,6 +60,9 @@ app.include_router(movement_types_router, prefix=settings.api_prefix)
 app.include_router(movements_router, prefix=settings.api_prefix)
 app.include_router(rfid_events_router, prefix=settings.api_prefix)
 app.include_router(rfid_ingest_router, prefix=settings.api_prefix)
+app.include_router(settings_router, prefix=settings.api_prefix)
+
+app.state.settings_service = SettingsService(ttl_seconds=2)
 
 @app.on_event("startup")
 def _load_antenna_map_on_startup():
