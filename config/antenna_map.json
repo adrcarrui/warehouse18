@@ -10,15 +10,15 @@
       "ports": [
         {
           "port": 0,
-          "logical_name": "ENTRADA_PUERTA",
+          "logical_name": "Pasillo 1",
           "location_id": 5,
-          "direction": "IN",
+          "direction": "BOTH",
           "is_active": true,
           "notes": "Puerta principal, lado interior"
         },
         {
           "port": 1,
-          "logical_name": "PASO_CONTROL_1",
+          "logical_name": "Pasillo 2",
           "location_id": 2,
           "direction": "BOTH",
           "is_active": true,

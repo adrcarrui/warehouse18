@@ -1,3 +1,12 @@
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+import asyncio
+
+from warehouse18.presentation.api.routes.rfid_events import publish_rfid_event
+from warehouse18.application.rfid.service import RFIDReaderService, RFIDServiceConfig
 from fastapi.middleware.cors import CORSMiddleware
 
 from fastapi import FastAPI, HTTPException, Depends
@@ -70,6 +79,35 @@ def _load_antenna_map_on_startup():
     m = load_antenna_map(path)
     app.state.antenna_map = m
     print(f"[antenna_map] loaded reader={m.reader_name} ports={sorted(m.ports.keys())} from {path}")
+
+@app.on_event("startup")
+async def _start_rfid_reader_on_startup():
+    if getattr(app.state, "rfid_service", None):
+        return  # ya existe
+
+    antenna_map = getattr(app.state, "antenna_map", None)
+
+    cfg = RFIDServiceConfig(
+        reader_id=getattr(antenna_map, "reader_name", "reader-1"),
+        host=getattr(settings, "rfid_host", "192.168.0.178"),
+        port=int(getattr(settings, "rfid_port", 4001)),
+    )
+
+    svc = RFIDReaderService(
+        cfg,
+        publish=publish_rfid_event,
+        loop=asyncio.get_running_loop(),
+    )
+
+    svc.start()
+    app.state.rfid_service = svc
+
+
+@app.on_event("shutdown")
+def _stop_rfid_reader_on_shutdown():
+    svc = getattr(app.state, "rfid_service", None)
+    if svc:
+        svc.stop()
 
 @app.get(f"{settings.api_prefix}/health")
 def health():
