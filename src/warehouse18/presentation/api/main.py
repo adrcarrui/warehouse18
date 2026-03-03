@@ -1,6 +1,7 @@
 import logging
+import os
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 import asyncio
@@ -82,6 +83,14 @@ def _load_antenna_map_on_startup():
 
 @app.on_event("startup")
 async def _start_rfid_reader_on_startup():
+    # ✅ Nuevo: permitir desactivar el lector interno
+    enable = os.getenv("WAREHOUSE18_RFID_INTERNAL_ENABLE", "0") == "1"
+    if not enable:
+        logging.getLogger("warehouse18.rfid.service").info(
+            "RFID internal reader disabled (WAREHOUSE18_RFID_INTERNAL_ENABLE=0)"
+        )
+        return
+
     if getattr(app.state, "rfid_service", None):
         return  # ya existe
 

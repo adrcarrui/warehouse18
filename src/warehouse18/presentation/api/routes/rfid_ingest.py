@@ -1,7 +1,6 @@
 from __future__ import annotations
-import logging
-logger = logging.getLogger("warehouse18.rfid")
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -15,6 +14,7 @@ from warehouse18.presentation.api.schemas import RfidIngestIn
 from warehouse18.presentation.api.routes.rfid_events import publish_rfid_event
 
 router = APIRouter(prefix="/rfid", tags=["rfid"])
+logger = logging.getLogger("warehouse18.rfid")
 
 COOLDOWN_SECONDS = 3
 _last_move_ts: dict[int, datetime] = {}  # stock_container_id -> last movement ts
@@ -49,7 +49,7 @@ async def _safe_publish_event(payload: dict[str, Any]) -> None:
     try:
         await publish_rfid_event(payload)
     except Exception:
-        # El monitor no debe tumbar el ingest.
+        # El monitor no debe tumbar el ingest
         return
 
 
@@ -61,17 +61,12 @@ async def ingest_rfid_event(
 ):
     epc = normalize_epc(body.epc)
     now = _utcnow()
-    logger.info(
-        "RFID INGEST RECEIVED | epc=%s antenna=%s rssi=%s",
-        epc,
-        body.antenna,
-        body.rssi,
-    )
 
-    # Helper: publica SIEMPRE al SSE y devuelve la respuesta
+    logger.info("RFID INGEST RECEIVED | epc=%s antenna=%s rssi=%s", epc, body.antenna, body.rssi)
+
     async def _emit_and_return(status: str, reason: str, extra: dict[str, Any] | None = None):
         payload: dict[str, Any] = {
-            "type": "tag",                   # lo que escucha la UI
+            "type": "tag",
             "ts": now.isoformat(),
             "epc": epc,
             "antenna": body.antenna,
@@ -89,7 +84,6 @@ async def ingest_rfid_event(
             resp.update(extra)
         return resp
 
-    # 0) antenna_map cargado en startup
     antenna_map = getattr(request.app.state, "antenna_map", None)
     if antenna_map is None:
         logger.warning("RFID INGEST | antenna_map NOT loaded")
@@ -97,51 +91,28 @@ async def ingest_rfid_event(
 
     port = antenna_map.ports.get(body.antenna)
     if not port:
-        logger.warning(
-        "RFID INGEST | antenna_not_mapped | antenna=%s", body.antenna,)
-        return await _emit_and_return(
-            "ignored",
-            "antenna_not_mapped",
-            {"antenna": body.antenna},
-        )
+        logger.warning("RFID INGEST | antenna_not_mapped | antenna=%s", body.antenna)
+        return await _emit_and_return("ignored", "antenna_not_mapped", {"antenna": body.antenna})
 
     to_location_id = port.location_id
+    base_extra = {"logical_name": port.logical_name, "to_location_id": to_location_id}
 
-    # Enriquecer SIEMPRE el evento con info de mapeo (esto ayuda mucho a depurar)
-    base_extra = {
-        "logical_name": port.logical_name,
-        "to_location_id": to_location_id,
-    }
-
-    # A) Feature flag: si está desactivado, no tocar BD (solo monitor)
-    settings_svc = getattr(request.app.state, "settings_service", None)
-    if settings_svc is not None:
-        try:
-            create_movements = bool(settings_svc.get_rfid_create_movements(db))
-        except Exception:
-            create_movements = False
-    else:
-        create_movements = True
-
+    # Si más adelante metes flags en app.state.settings_service, aquí lo puedes reactivar.
+    # Por ahora: siempre crea movimientos.
+    create_movements = True
     if not create_movements:
         return await _emit_and_return("ok", "movements_disabled", base_extra)
 
-    # 1) buscar stock container por EPC
     sc = (
         db.query(StockContainer)
-        .filter(
-            StockContainer.container_code == epc,
-            StockContainer.is_active.is_(True),
-        )
+        .filter(StockContainer.container_code == epc, StockContainer.is_active.is_(True))
         .first()
     )
     if not sc:
-        logger.info("RFID INGEST | container_not_found | epc=%s", epc,)
+        logger.info("RFID INGEST | container_not_found | epc=%s", epc)
         return await _emit_and_return("ignored", "container_not_found", base_extra)
 
     from_location_id = sc.location_id
-
-    # 2) si no cambia ubicación, no hay movimiento
     if from_location_id == to_location_id:
         return await _emit_and_return(
             "ok",
@@ -149,7 +120,6 @@ async def ingest_rfid_event(
             {**base_extra, "stock_container_id": sc.id, "from_location_id": from_location_id},
         )
 
-    # 3) cooldown anti-spam
     last = _last_move_ts.get(sc.id)
     if last:
         diff = (now - last).total_seconds()
@@ -165,10 +135,8 @@ async def ingest_rfid_event(
                 },
             )
 
-    # 4) resolve movement type
     mt_id = _get_mt_id(db, "GT")
 
-    # 5) crear movement + actualizar stock_container.location_id
     try:
         mv = Movement(
             movement_type_id=mt_id,
@@ -186,13 +154,7 @@ async def ingest_rfid_event(
 
         db.commit()
         db.refresh(mv)
-        logger.info(
-            "RFID MOVE CREATED | movement_id=%s container=%s from=%s to=%s",
-            mv.id,
-            sc.id,
-            from_location_id,
-            to_location_id,
-        )
+
         _last_move_ts[sc.id] = now
 
         return await _emit_and_return(
@@ -206,11 +168,26 @@ async def ingest_rfid_event(
                 "to_location_id": to_location_id,
             },
         )
+
     except IntegrityError as e:
         db.rollback()
-        # También emitimos el fallo al monitor
-        return await _emit_and_return(
-            "ignored",
-            "db_integrity_error",
-            {**base_extra, "detail": str(e.orig)},
-        )
+        return await _emit_and_return("ignored", "db_integrity_error", {**base_extra, "detail": str(e.orig)})
+    
+@router.post("/ingest/batch")
+async def ingest_rfid_batch(
+    body: dict[str, list[RfidIngestIn]],
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    reads = body.get("reads", [])
+    out: list[dict[str, Any]] = []
+
+    # Importa tu función actual (si está en el mismo módulo, llama directo)
+    for r in reads:
+        # reutiliza la lógica existente: llama a ingest_rfid_event(r, request, db)
+        # pero ojo: ingest_rfid_event hace commit/rollback por lectura.
+        # Para empezar, lo dejamos simple:
+        res = await ingest_rfid_event(r, request, db)  # type: ignore
+        out.append(res)
+
+    return {"count": len(out), "results": out}
