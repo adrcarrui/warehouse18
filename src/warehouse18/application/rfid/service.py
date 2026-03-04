@@ -19,7 +19,10 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
+import os
+import httpx
 
+from warehouse18.config import settings
 from warehouse18.domain.rfid import RFIDReadEvent, ReaderStatusEvent
 from warehouse18.infrastructure.rfid.commands import build_8a_fast_switch_inventory_payload
 from warehouse18.infrastructure.rfid.parser import decode_frame, try_parse_tag_from_inventory
@@ -40,7 +43,7 @@ class RFIDServiceConfig:
 
     def __post_init__(self):
         if self.ants is None:
-            object.__setattr__(self, "ants", list(range(1, 17)))
+            object.__setattr__(self, "ants", list(range(1, 3)))
 
 
 class RFIDReaderService:
@@ -115,44 +118,90 @@ class RFIDReaderService:
         self._status("disconnected", "stopped")
 
     def _connect_and_loop(self) -> None:
+        inventory_every_s = float(os.getenv("WAREHOUSE18_RFID_INVENTORY_EVERY_S", "0.5"))
+        last_inventory_ts = 0.0  # forzar primer envío inmediato
+
+        # --- Inventory RAW frame (exacto como rfid_simple_test.py) ---
+        frame_hex = settings.rfid_8a_frame_hex.strip().replace(" ", "")
+        if not frame_hex:
+            raise RuntimeError("Missing WAREHOUSE18_RFID_8A_FRAME_HEX in .env")
+        inv_frame = bytes.fromhex(frame_hex)
+
         self._reader = RFIDReaderTCP(TCPConnectionConfig(host=self.cfg.host, port=self.cfg.port))
         self._reader.connect()
         log.info("RFID TCP connected")
         self._status("connected", f"{self.cfg.host}:{self.cfg.port}")
 
-        payload = build_8a_fast_switch_inventory_payload(
-            ants=list(self.cfg.ants or []),
-            repeat=self.cfg.repeat,
-        )
-        log.info("Sending inventory cmd=0x%02X ants=%s repeat=%s", self.cfg.inventory_cmd, self.cfg.ants, self.cfg.repeat)
-        self._reader.send_cmd(self.cfg.inventory_cmd, payload)
+        log.info("Sending inventory RAW frame=%s", frame_hex.upper())
+        self._reader.send_raw(inv_frame)
 
-        while not self._stop.is_set():
-            try:
-                for raw in self._reader.frames():
-                    fr = decode_frame(raw)
-                    tag = try_parse_tag_from_inventory(fr)
-                    if not tag:
+        # --- Forward a /rfid/ingest (opcional, para demo) ---
+        forward_to_ingest = os.getenv("WAREHOUSE18_RFID_FORWARD_TO_INGEST", "0") == "1"
+        ingest_url = os.getenv("WAREHOUSE18_RFID_INGEST_URL", "http://127.0.0.1:8000/api/rfid/ingest")
+        http_client = httpx.Client(timeout=1.0) if forward_to_ingest else None
+        if forward_to_ingest:
+            log.info("Forwarding RFID tags to ingest_url=%s", ingest_url)
+
+        try:
+            while not self._stop.is_set():
+                try:
+                    # Re-disparo del inventario (modo demo)
+                    now_ts = time.time()
+                    if (now_ts - last_inventory_ts) >= inventory_every_s:
+                        self._reader.send_raw(inv_frame)
+                        last_inventory_ts = now_ts
+
+                    got_any = False
+                    if int(time.time()) % 2 == 0:
+                        log.debug("RFID loop alive, waiting frames…")
+                    for chunk in self._reader.recv_chunks(window_s=3.0):
+                        got_any = True
+                        log.debug(
+                            "RFID raw frame len=%s hex_head=%s",
+                            len(chunk),
+                            chunk[:12].hex().upper(),
+                        )
+
+                        fr = decode_frame(chunk)
+                        tag = try_parse_tag_from_inventory(fr)
+                        if not tag:
+                            continue
+
+                        ev = RFIDReadEvent(
+                            epc=tag.epc,
+                            reader_id=self.cfg.reader_id,
+                            antenna=tag.antenna,
+                            rssi=float(tag.rssi_raw) if tag.rssi_raw is not None else None,
+                            seen_at=tag.seen_at,
+                            protocol="DDCT",
+                            raw=chunk.hex().upper(),
+                        )
+
+                        # 1) SSE / monitor
+                        self._publish_from_thread({"type": "tag", **ev.to_dict()})
+
+                        # 2) Forward al endpoint ingest (para que se ejecute la lógica real de user/item)
+                        if http_client is not None:
+                            try:
+                                http_client.post(
+                                    ingest_url,
+                                    json={"epc": ev.epc, "antenna": ev.antenna, "rssi": ev.rssi},
+                                )
+                            except Exception:
+                                pass
+
+                    if not got_any:
                         continue
 
-                    ev = RFIDReadEvent(
-                        epc=tag.epc,
-                        reader_id=self.cfg.reader_id,
-                        antenna=tag.antenna,
-                        rssi=float(tag.rssi_raw) if tag.rssi_raw is not None else None,
-                        seen_at=tag.seen_at,
-                        protocol="DDCT",
-                        raw=raw.hex().upper(),
-                    )
-                    self._publish_from_thread({"type": "tag", **ev.to_dict()})
-                    break  # salir del for para poder parar rápido
-
-            except TimeoutError:
-                continue
-            except (ConnectionError, OSError) as e:
-                self._status("disconnected", str(e))
-                try:
-                    self._reader.close()
-                except Exception:
-                    pass
-                raise
+                except TimeoutError:
+                    continue
+                except (ConnectionError, OSError) as e:
+                    self._status("disconnected", str(e))
+                    try:
+                        self._reader.close()
+                    except Exception:
+                        pass
+                    raise
+        finally:
+            if http_client is not None:
+                http_client.close()

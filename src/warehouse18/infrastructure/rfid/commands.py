@@ -1,25 +1,20 @@
 # src/warehouse18/infrastructure/rfid/commands.py
-
 from __future__ import annotations
+
+import os
 
 
 def build_8a_fast_switch_inventory_payload(
     *,
-    ants: list[int],           # antenas 1..N (tu caso 16)
-    stay_times: list[int] | None = None,  # tiempo por antena (unidades del lector)
-    interval_ms: int = 0,
-    repeat: int = 0x01,         # número de rondas
+    ants: list[int],                 # antenas 1..N
+    stay_times: list[int] | None = None,
+    repeat: int = 0x01,
 ) -> bytes:
     """
-    Construye el payload del comando 0x8A (Fast Switch Ant Inventory).
+    Payload 0x8A compatible con la trama que te funciona en rfid_simple_test.py:
+    00 + (ant, stay)*N + TAIL
 
-    NOTA: La estructura exacta depende del firmware, pero en muchos lectores:
-    - Se envía una lista de (ant, stay)
-    - interval
-    - repeat
-
-    Como tu fabricante te dio doc V3.8, ajustaremos exacto con esa tabla cuando quieras,
-    pero de momento lo montamos de forma compatible con lo que ya te funciona.
+    TAIL por defecto: 000500060007000501  (igual que tu script)
     """
     if not ants:
         raise ValueError("ants no puede estar vacío")
@@ -28,23 +23,23 @@ def build_8a_fast_switch_inventory_payload(
 
     if stay_times is None:
         stay_times = [1] * len(ants)
-
     if len(stay_times) != len(ants):
         raise ValueError("stay_times debe tener la misma longitud que ants")
 
-    # Tu trama manual empieza con 0x00 y luego pares 01 01 02 01 03 01...
-    # Eso sugiere: 0x00 + (ant, stay)*N + ... + repeat/interval/etc.
+    tail_hex = os.getenv("WAREHOUSE18_RFID_8A_TAIL_HEX", "000500060007000501").strip().replace(" ", "")
+    tail = bytes.fromhex(tail_hex)
+
     body = bytearray()
     body.append(0x00)
-
     for ant, st in zip(ants, stay_times):
         body.append(ant & 0xFF)
         body.append(st & 0xFF)
 
-    # Placeholder de parámetros finales (porque tu firmware espera más bytes)
-    # Mantengo el patrón “compatible con lo que ya te funciona”.
-    # Luego lo alineamos 1:1 con la tabla del doc V3.8.
-    body.extend([0x00, 0x05, 0x00, 0x06, 0x00, 0x07, 0x00])
-    body.append(repeat & 0xFF)
+    # Si el tail incluye repeat dentro, perfecto. Si no, lo añadimos.
+    # (Tu tail por defecto ya acaba en ...01)
+    if len(tail) > 0:
+        body.extend(tail)
+    else:
+        body.append(repeat & 0xFF)
 
     return bytes(body)

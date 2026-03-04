@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
+from warehouse18.rfid_settings import RfidSettings
 from warehouse18.config import settings
 from warehouse18.infrastructure.db import get_db
 from warehouse18.presentation.api.schemas import (
@@ -51,6 +52,11 @@ app = FastAPI(
     
 )
 
+app.state.rfid_state = {
+    "presence": {},           # user_id -> datetime (última vez visto)
+    "last_user_by_zone": {},  # zone -> {"user_id": int, "ts": datetime}
+}
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
@@ -83,8 +89,11 @@ def _load_antenna_map_on_startup():
 
 @app.on_event("startup")
 async def _start_rfid_reader_on_startup():
+    print("DBG | env WAREHOUSE18_RFID_INTERNAL_ENABLE =", os.getenv("WAREHOUSE18_RFID_INTERNAL_ENABLE"))
+    print("DBG | settings.rfid_internal_enable =", getattr(settings, "rfid_internal_enable", None))
+    print("DBG | settings class =", type(settings))
     # ✅ Nuevo: permitir desactivar el lector interno
-    enable = os.getenv("WAREHOUSE18_RFID_INTERNAL_ENABLE", "0") == "1"
+    enable = bool(getattr(settings, "rfid_internal_enable", False))
     if not enable:
         logging.getLogger("warehouse18.rfid.service").info(
             "RFID internal reader disabled (WAREHOUSE18_RFID_INTERNAL_ENABLE=0)"

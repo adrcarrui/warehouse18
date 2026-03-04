@@ -123,3 +123,31 @@ class RFIDReaderTCP:
 
             for fr in self._pop_frames_from_buffer():
                 yield fr
+
+    def send_raw(self, frame: bytes) -> None:
+        if not self._sock:
+            raise ConnectionError("TCP not connected")
+        self._sock.sendall(frame)
+
+    def recv_chunks(self, window_s: float = 1.0, max_bytes: int = 4096):
+        """
+        Devuelve chunks crudos del socket (sin framing), para depurar si realmente
+        entran bytes cuando pasas un tag.
+        """
+        import select
+        import time
+
+        if not self._sock:
+            raise ConnectionError("TCP not connected")
+
+        end = time.time() + float(window_s)
+        while time.time() < end:
+            timeout = max(0.0, end - time.time())
+            r, _, _ = select.select([self._sock], [], [], timeout)
+            if not r:
+                return
+            data = self._sock.recv(max_bytes)
+            if not data:
+                raise ConnectionError("TCP socket closed by peer")
+            yield data
+            return

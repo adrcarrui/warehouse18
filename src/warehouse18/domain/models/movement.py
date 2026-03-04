@@ -21,3 +21,5 @@ class Movement(Base):
 
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     notes = Column(Text, nullable=True)
+
+    item_key = Column(Text, nullable=True)  # denormalized for easier querying

@@ -17,15 +17,27 @@ logger = logging.getLogger("warehouse18.rfid.service")
 HEAD = 0xA0
 
 
+@dataclass(frozen=True)
+class DedupeKey:
+    reader_id: str
+    epc: str
+    antenna: int
+
+
 @dataclass
 class RFIDServiceConfig:
     reader_host: str = os.getenv("WAREHOUSE18_RFID_HOST", "192.168.0.178")
     reader_port: int = int(os.getenv("WAREHOUSE18_RFID_PORT", "4001"))
+    # Identificador estable del lector (para dedupe multi-reader). Por defecto: host.
+    reader_id: str = os.getenv(
+        "WAREHOUSE18_RFID_READER_ID",
+        os.getenv("WAREHOUSE18_RFID_HOST", "reader-1"),
+    )
 
     inventory_body_hex: str = os.getenv(
         "WAREHOUSE18_RFID_8A_BODY_HEX",
         "15018A000101010200030004000500060007000001",
-        #"15018A000101010201030104000500060007000501",
+        # "15018A000101010201030104000500060007000501",
     )
 
     ingest_url: str = os.getenv(
@@ -41,6 +53,10 @@ class RFIDServiceConfig:
 
     # anti-spam (antes del POST)
     dedupe_seconds: float = float(os.getenv("WAREHOUSE18_RFID_DEDUPE_SECONDS", "0.6"))
+    # TTL para limpiar el diccionario de dedupe (evita crecimiento infinito)
+    dedupe_ttl_seconds: float = float(os.getenv("WAREHOUSE18_RFID_DEDUPE_TTL_SECONDS", "6.0"))
+    # cada cuánto intentamos limpiar (segundos)
+    dedupe_gc_every_s: float = float(os.getenv("WAREHOUSE18_RFID_DEDUPE_GC_EVERY_S", "2.0"))
 
     # batching
     batch_max: int = int(os.getenv("WAREHOUSE18_RFID_BATCH_MAX", "25"))
@@ -109,14 +125,14 @@ def parse_8A(frame: bytes) -> Optional[tuple[int, str, int | None]]:
 
     freq_ant = frame[4]
     pc = frame[5:7]  # no lo usamos, pero está ahí
-    rssi_byte = frame[-2]          # penúltimo byte
-    epc_bytes = frame[7:-2]        # desde después de PC hasta antes de RSSI
+    rssi_byte = frame[-2]  # penúltimo byte
+    epc_bytes = frame[7:-2]  # desde después de PC hasta antes de RSSI
 
     if not epc_bytes:
         return None
 
     # Antena real:
-    ant_low = freq_ant & 0x03      # 0..3
+    ant_low = freq_ant & 0x03  # 0..3
     ant_group = 4 if (rssi_byte & 0x80) else 0  # grupo 5..8 si high bit set
     antenna = ant_low + ant_group  # 0..7 para modelos de 8 antenas
 
@@ -124,6 +140,7 @@ def parse_8A(frame: bytes) -> Optional[tuple[int, str, int | None]]:
 
     epc = epc_bytes.hex().upper()
     return antenna, epc, rssi
+
 
 def split_frames(buf: bytearray) -> list[bytes]:
     """
@@ -166,8 +183,10 @@ class RFIDIngestService:
         self.schema = load_epc_schema(schema_path)
         logger.info("EPC schema loaded | path=%s", schema_path)
 
-        # dedupe: (epc, antenna) -> last_emit_ts
-        self._last_emit: dict[tuple[str, int], float] = {}
+        # dedupe: (reader_id, epc, antenna) -> last_emit_ts
+        self.reader_id = str(self.cfg.reader_id)
+        self._last_emit: dict[DedupeKey, float] = {}
+        self._last_dedupe_gc_ts: float = 0.0
 
         # batching
         self._batch: list[dict[str, object]] = []
@@ -181,8 +200,28 @@ class RFIDIngestService:
             # fallback si alguien configura raro
             self.batch_url = self.batch_url + "/batch"
 
+    def _dedupe_gc(self, now: float) -> None:
+        if self.cfg.dedupe_seconds <= 0:
+            return
+        if (now - self._last_dedupe_gc_ts) < self.cfg.dedupe_gc_every_s:
+            return
+        self._last_dedupe_gc_ts = now
+
+        cutoff = now - max(self.cfg.dedupe_ttl_seconds, self.cfg.dedupe_seconds * 2)
+        if not self._last_emit:
+            return
+
+        dead = [k for k, ts in self._last_emit.items() if ts < cutoff]
+        for k in dead:
+            self._last_emit.pop(k, None)
+
     def _dedupe_ok(self, epc: str, antenna: int, now: float) -> bool:
-        k = (epc, antenna)
+        if self.cfg.dedupe_seconds <= 0:
+            return True
+
+        self._dedupe_gc(now)
+
+        k = DedupeKey(self.reader_id, epc, int(antenna))
         last = self._last_emit.get(k)
         if last is not None and (now - last) < self.cfg.dedupe_seconds:
             return False
@@ -226,9 +265,10 @@ class RFIDIngestService:
         )
 
         logger.info(
-            "RFID service starting | reader=%s:%s ingest=%s batch=%s",
+            "RFID service starting | reader=%s:%s reader_id=%s ingest=%s batch=%s",
             self.cfg.reader_host,
             self.cfg.reader_port,
+            self.reader_id,
             self.cfg.ingest_url,
             self.batch_url,
         )
@@ -239,9 +279,7 @@ class RFIDIngestService:
                     s.settimeout(2.0)
                     s.connect((self.cfg.reader_host, self.cfg.reader_port))
                     s.settimeout(self.cfg.sock_timeout_s)
-                    #logger.info("SEND FRAME \ %s", self.frame.hex().upper())
-                    #logger.info("BODY HEX | %s", self.cfg.inventory_body_hex.upper())
-                    #logger.info("inventory_body_hex=%s", self.cfg.inventory_body_hex)
+
                     s.sendall(self.frame)
 
                     buf = bytearray()
@@ -278,7 +316,7 @@ class RFIDIngestService:
                         logger.info("ACCEPTED | antenna=%s epc=%s rssi=%s", antenna, epc, rssi)
                         self._batch.append({"epc": epc, "antenna": antenna, "rssi": rssi})
 
-                # 🔥 flush batch por tiempo/tamaño
+                # flush batch por tiempo/tamaño
                 self._flush_batch_if_needed(force=False)
 
                 time.sleep(self.cfg.poll_interval_s)

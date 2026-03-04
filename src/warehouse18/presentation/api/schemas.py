@@ -229,6 +229,8 @@ class MovementCreateIn(BaseModel):
     user_id: Optional[int] = None
     notes: Optional[str] = None
 
+    item_key: Optional[str] = None  # denormalized for easier querying
+
 
 class MovementOut(ORMBase):
     id: int
@@ -246,6 +248,8 @@ class MovementOut(ORMBase):
     user_id: Optional[int] = None
     created_at: datetime
     notes: Optional[str] = None
+
+    item_key: Optional[str] = None  # denormalized for easier querying
 
 T = TypeVar("T")
 
