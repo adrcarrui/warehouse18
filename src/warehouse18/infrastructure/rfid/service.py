@@ -1,332 +1,275 @@
+# src/warehouse18/infrastructure/rfid/service.py
+
+"""RFID reader service (TCP -> events).
+
+Objetivo (MVP):
+  - Conectar a un lector RFID por TCP (protocolo DDCT)
+  - Enviar un comando de inventario (0x8A) al iniciar
+  - Leer frames, parsear tags y publicar eventos a un callback (normalmente SSE)
+
+No toca base de datos. Solo genera eventos para la UI/monitor.
+"""
+
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
 import os
-import socket
+import threading
 import time
-import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 
-from warehouse18.application.rfid.epc96 import load_epc_schema, is_whitelisted
+import httpx
 
-logger = logging.getLogger("warehouse18.rfid.service")
+from warehouse18.config import settings
+from warehouse18.domain.rfid import RFIDReadEvent, ReaderStatusEvent
+from warehouse18.infrastructure.rfid.epc96 import EPCSchema, load_epc_schema, parse_epc96
+from warehouse18.infrastructure.rfid.parser import decode_frame, try_parse_tag_from_inventory
+from warehouse18.infrastructure.rfid.tcp_client import RFIDReaderTCP, TCPConnectionConfig
 
-HEAD = 0xA0
+log = logging.getLogger("warehouse18.rfid.service")
+
+Publisher = Callable[[dict[str, Any]], Any]
 
 
 @dataclass(frozen=True)
-class DedupeKey:
-    reader_id: str
-    epc: str
-    antenna: int
-
-
-@dataclass
 class RFIDServiceConfig:
-    reader_host: str = os.getenv("WAREHOUSE18_RFID_HOST", "192.168.0.178")
-    reader_port: int = int(os.getenv("WAREHOUSE18_RFID_PORT", "4001"))
-    # Identificador estable del lector (para dedupe multi-reader). Por defecto: host.
-    reader_id: str = os.getenv(
-        "WAREHOUSE18_RFID_READER_ID",
-        os.getenv("WAREHOUSE18_RFID_HOST", "reader-1"),
-    )
+    reader_id: str = "reader-1"
+    host: str = "127.0.0.1"
+    port: int = 4001
+    ants: list[int] | None = None  # 1..16
+    repeat: int = 0x01
+    reconnect_seconds: float = 2.0
+    inventory_cmd: int = 0x8A
 
-    inventory_body_hex: str = os.getenv(
-        "WAREHOUSE18_RFID_8A_BODY_HEX",
-        "15018A000101010200030004000500060007000001",
-        # "15018A000101010201030104000500060007000501",
-    )
-
-    ingest_url: str = os.getenv(
-        "WAREHOUSE18_RFID_INGEST_URL",
-        "http://127.0.0.1:8000/api/rfid/ingest",
-    )
-
-    poll_interval_s: float = float(os.getenv("WAREHOUSE18_RFID_POLL_INTERVAL_S", "0.08"))
-
-    # ventana de lectura tras enviar 8A (puerta doble)
-    recv_window_s: float = float(os.getenv("WAREHOUSE18_RFID_RECV_WINDOW_S", "0.18"))
-    sock_timeout_s: float = float(os.getenv("WAREHOUSE18_RFID_SOCK_TIMEOUT_S", "0.05"))
-
-    # anti-spam (antes del POST)
-    dedupe_seconds: float = float(os.getenv("WAREHOUSE18_RFID_DEDUPE_SECONDS", "0.6"))
-    # TTL para limpiar el diccionario de dedupe (evita crecimiento infinito)
-    dedupe_ttl_seconds: float = float(os.getenv("WAREHOUSE18_RFID_DEDUPE_TTL_SECONDS", "6.0"))
-    # cada cuánto intentamos limpiar (segundos)
-    dedupe_gc_every_s: float = float(os.getenv("WAREHOUSE18_RFID_DEDUPE_GC_EVERY_S", "2.0"))
-
-    # batching
-    batch_max: int = int(os.getenv("WAREHOUSE18_RFID_BATCH_MAX", "25"))
-    batch_flush_s: float = float(os.getenv("WAREHOUSE18_RFID_BATCH_FLUSH_S", "0.25"))
-
-    log_level: str = os.getenv("WAREHOUSE18_RFID_LOG_LEVEL", "INFO")
+    def __post_init__(self):
+        if self.ants is None:
+            object.__setattr__(self, "ants", list(range(1, 3)))
 
 
-def checksum(hex_bytes: str) -> str:
-    data = bytes.fromhex(hex_bytes)
-    total = sum(data)
-    return f"{(256 - (total % 256)) % 256:02X}"
+class RFIDReaderService:
+    """Servicio en background (thread) para leer el lector y publicar eventos."""
 
+    def __init__(
+        self,
+        cfg: RFIDServiceConfig,
+        *,
+        publish: Publisher,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+    ):
+        self.cfg = cfg
+        self._publish = publish
+        self._loop = loop
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._reader: Optional[RFIDReaderTCP] = None
 
-def build_frame(body_hex: str) -> bytes:
-    full = "A0" + body_hex.upper()
-    chk = checksum(full)
-    return bytes.fromhex(full + chk)
-
-
-def parse_8A(frame: bytes) -> Optional[tuple[int, str, int | None]]:
-    """
-    Parse de respuesta 0x8A según 'UHF RFID Reader Serial Interface V3.8':
-    Tag packet:
-      Head(0xA0) Len Addr Cmd FreqAnt PC(2) EPC(N) RSSI(1) Check(1)
-
-    - FreqAnt: high 6 bits = frequency, low 2 bits = antenna ID (0..3)
-    - RSSI: high bit selects antenna group (0 => ant 1..4, 1 => ant 5..8) for 8-ant models.
-            (High bit not counted in RSSI)
-    """
-    if len(frame) < 6:
-        return None
-    if frame[0] != 0xA0:
-        return None
-
-    length = frame[1]
-    # sanity: total bytes should be 2 + length
-    if len(frame) != 2 + length:
-        # si tu split_frames ya recorta perfecto, esto debería cuadrar
-        return None
-
-    addr = frame[2]
-    cmd = frame[3]
-    if cmd != 0x8A:
-        return None
-
-    # Caso "antena missing" (detector on): Len=0x05, payload: Addr Cmd AntID ErrorCode Check
-    if length == 0x05:
-        ant_id = frame[4]  # 00..03
-        err = frame[5]
-        logger.warning("RFID antenna missing | ant=%s err=0x%02X", ant_id, err)
-        return None
-
-    # Caso "summary": Len=0x0A (TotalRead + Duration). No hay EPC.
-    if length == 0x0A:
-        # frame[4:7] totalRead (3 bytes), frame[7:11] duration (4 bytes)
-        total_read = int.from_bytes(frame[4:7], "big")
-        duration_ms = int.from_bytes(frame[7:11], "big")
-        logger.debug("RFID summary | total_read=%s duration=%sms", total_read, duration_ms)
-        return None
-
-    # Caso tag packet normal
-    # Layout mínimo: Addr(1) Cmd(1) FreqAnt(1) PC(2) EPC(?) RSSI(1) Check(1)
-    if length < (1 + 1 + 1 + 2 + 1 + 1):
-        return None
-
-    freq_ant = frame[4]
-    pc = frame[5:7]  # no lo usamos, pero está ahí
-    rssi_byte = frame[-2]  # penúltimo byte
-    epc_bytes = frame[7:-2]  # desde después de PC hasta antes de RSSI
-
-    if not epc_bytes:
-        return None
-
-    # Antena real:
-    ant_low = freq_ant & 0x03  # 0..3
-    ant_group = 4 if (rssi_byte & 0x80) else 0  # grupo 5..8 si high bit set
-    antenna = ant_low + ant_group  # 0..7 para modelos de 8 antenas
-
-    rssi = rssi_byte & 0x7F
-
-    epc = epc_bytes.hex().upper()
-    return antenna, epc, rssi
-
-
-def split_frames(buf: bytearray) -> list[bytes]:
-    """
-    Frame: A0 LEN ...   (LEN incluye addr+cmd+data+chk)
-    total = 2 + LEN
-    """
-    out: list[bytes] = []
-    while True:
-        try:
-            i = buf.index(HEAD)
-        except ValueError:
-            buf.clear()
-            break
-
-        if i > 0:
-            del buf[:i]
-
-        if len(buf) < 2:
-            break
-
-        length = buf[1]
-        total = 2 + length
-        if len(buf) < total:
-            break
-
-        out.append(bytes(buf[:total]))
-        del buf[:total]
-
-    return out
-
-
-class RFIDIngestService:
-    def __init__(self, cfg: RFIDServiceConfig | None = None):
-        self.cfg = cfg or RFIDServiceConfig()
-        self.frame = build_frame(self.cfg.inventory_body_hex)
-
-        # schema EPC (familias fuera del código)
-        root = Path(__file__).resolve().parents[4]  # ajusta si tu árbol difiere
+        # Carga fija del schema EPC desde config/epc_schema.json
+        root = Path(__file__).resolve().parents[4]
         schema_path = root / "config" / "epc_schema.json"
-        self.schema = load_epc_schema(schema_path)
-        logger.info("EPC schema loaded | path=%s", schema_path)
-
-        # dedupe: (reader_id, epc, antenna) -> last_emit_ts
-        self.reader_id = str(self.cfg.reader_id)
-        self._last_emit: dict[DedupeKey, float] = {}
-        self._last_dedupe_gc_ts: float = 0.0
-
-        # batching
-        self._batch: list[dict[str, object]] = []
-        self._last_flush = time.time()
-
-        # URL batch derivada
-        self.batch_url = self.cfg.ingest_url.rstrip("/")
-        if self.batch_url.endswith("/ingest"):
-            self.batch_url = self.batch_url + "/batch"
-        else:
-            # fallback si alguien configura raro
-            self.batch_url = self.batch_url + "/batch"
-
-    def _dedupe_gc(self, now: float) -> None:
-        if self.cfg.dedupe_seconds <= 0:
-            return
-        if (now - self._last_dedupe_gc_ts) < self.cfg.dedupe_gc_every_s:
-            return
-        self._last_dedupe_gc_ts = now
-
-        cutoff = now - max(self.cfg.dedupe_ttl_seconds, self.cfg.dedupe_seconds * 2)
-        if not self._last_emit:
-            return
-
-        dead = [k for k, ts in self._last_emit.items() if ts < cutoff]
-        for k in dead:
-            self._last_emit.pop(k, None)
-
-    def _dedupe_ok(self, epc: str, antenna: int, now: float) -> bool:
-        if self.cfg.dedupe_seconds <= 0:
-            return True
-
-        self._dedupe_gc(now)
-
-        k = DedupeKey(self.reader_id, epc, int(antenna))
-        last = self._last_emit.get(k)
-        if last is not None and (now - last) < self.cfg.dedupe_seconds:
-            return False
-        self._last_emit[k] = now
-        return True
-
-    def _flush_batch_if_needed(self, force: bool = False) -> None:
-        now = time.time()
-        if not self._batch:
-            return
-
-        if not force:
-            if len(self._batch) < self.cfg.batch_max and (now - self._last_flush) < self.cfg.batch_flush_s:
-                return
-
-        reads = self._batch
-        self._batch = []
-        self._last_flush = now
-
-        payload = {"reads": reads}
-        data = json.dumps(payload).encode("utf-8")
-
-        req = urllib.request.Request(
-            self.batch_url,
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+        self._epc_schema: EPCSchema | None = None
 
         try:
-            with urllib.request.urlopen(req, timeout=2.0) as resp:
-                body = resp.read(200).decode("utf-8", errors="ignore")
-                logger.debug("POST batch OK | %s | %s", resp.status, body)
+            self._epc_schema = load_epc_schema(schema_path)
+            log.info("EPC schema loaded | path=%s", schema_path)
+        except Exception:
+            log.exception("Failed to load EPC schema from %s", schema_path)
+            raise
+
+    @property
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def start(self) -> None:
+        if self.is_running:
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="RFIDReaderService", daemon=True)
+        self._thread.start()
+
+    def stop(self, *, timeout: float = 2.0) -> None:
+        self._stop.set()
+        try:
+            if self._reader:
+                self._reader.close()
+        except Exception:
+            pass
+        if self._thread:
+            self._thread.join(timeout=timeout)
+
+    def _publish_from_thread(self, payload: dict[str, Any]) -> None:
+        try:
+            out = self._publish(payload)
+            if asyncio.iscoroutine(out):
+                if self._loop is None:
+                    asyncio.run(out)
+                else:
+                    asyncio.run_coroutine_threadsafe(out, self._loop)
+        except Exception:
+            # MVP: no matamos el hilo por un fallo de publish
+            pass
+
+    def _status(self, status: str, message: str | None = None) -> None:
+        ev = ReaderStatusEvent(
+            reader_id=self.cfg.reader_id,
+            status=status,
+            at=datetime.now(timezone.utc),
+            message=message,
+        )
+        self._publish_from_thread({"type": "reader_status", **ev.to_dict()})
+
+    def _is_valid_formatted_epc(self, epc: str) -> bool:
+        """
+        Acepta solo EPCs de 96 bits (24 hex chars) que cumplan:
+          - magic correcto
+          - version correcta
+          - checksum xor8 correcto
+          - family reconocida en schema
+        """
+        if self._epc_schema is None:
+            return False
+
+        try:
+            parsed = parse_epc96(epc, self._epc_schema)
+            ok = (
+                parsed.magic == self._epc_schema.magic
+                and parsed.version == self._epc_schema.version
+                and parsed.checksum_ok
+                and parsed.family_name is not None
+            )
+            if not ok:
+                log.debug(
+                    "TAG descartado | epc=%s magic=%04X version=%s family=%s checksum_ok=%s",
+                    epc,
+                    parsed.magic,
+                    parsed.version,
+                    parsed.family_name,
+                    parsed.checksum_ok,
+                )
+            return ok
         except Exception as e:
-            logger.warning("POST batch FAIL | url=%s | %s", self.batch_url, e)
+            log.debug("TAG descartado | epc=%s motivo=%s", epc, e)
+            return False
 
-    def run(self) -> None:
-        logging.basicConfig(
-            level=getattr(logging, self.cfg.log_level.upper(), logging.INFO),
-            format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-        )
-
-        logger.info(
-            "RFID service starting | reader=%s:%s reader_id=%s ingest=%s batch=%s",
-            self.cfg.reader_host,
-            self.cfg.reader_port,
-            self.reader_id,
-            self.cfg.ingest_url,
-            self.batch_url,
-        )
-
-        while True:
+    def _run(self) -> None:
+        backoff = self.cfg.reconnect_seconds
+        while not self._stop.is_set():
             try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.settimeout(2.0)
-                    s.connect((self.cfg.reader_host, self.cfg.reader_port))
-                    s.settimeout(self.cfg.sock_timeout_s)
-
-                    s.sendall(self.frame)
-
-                    buf = bytearray()
-                    end = time.time() + self.cfg.recv_window_s
-
-                    while time.time() < end:
-                        try:
-                            chunk = s.recv(4096)
-                            if not chunk:
-                                break
-                            buf.extend(chunk)
-                        except socket.timeout:
-                            break
-
-                frames = split_frames(buf)
-
-                now = time.time()
-                for fr in frames:
-                    parsed = parse_8A(fr)
-                    if parsed:
-                        antenna, epc, rssi = parsed
-                        epc = epc.upper()
-
-                        logger.debug("RAW TAG | antenna=%s epc=%s rssi=%s", antenna, epc, rssi)
-
-                        if not is_whitelisted(epc, self.schema):
-                            logger.debug("IGNORED whitelist | antenna=%s epc=%s", antenna, epc)
-                            continue
-
-                        if not self._dedupe_ok(epc, antenna, now):
-                            logger.debug("IGNORED dedupe | antenna=%s epc=%s", antenna, epc)
-                            continue
-
-                        logger.info("ACCEPTED | antenna=%s epc=%s rssi=%s", antenna, epc, rssi)
-                        self._batch.append({"epc": epc, "antenna": antenna, "rssi": rssi})
-
-                # flush batch por tiempo/tamaño
-                self._flush_batch_if_needed(force=False)
-
-                time.sleep(self.cfg.poll_interval_s)
-
+                log.info("RFID loop: connecting… host=%s port=%s", self.cfg.host, self.cfg.port)
+                self._connect_and_loop()
             except Exception as e:
-                logger.warning("RFID loop error: %s", e)
-                # intenta mandar lo que quede, por si acaso
-                self._flush_batch_if_needed(force=True)
-                time.sleep(1)
+                log.exception("RFID loop crashed, will retry in %.1fs", backoff)
+                self._status("error", str(e))
+                time.sleep(backoff)
+        self._status("disconnected", "stopped")
 
+    def _connect_and_loop(self) -> None:
+        inventory_every_s = float(os.getenv("WAREHOUSE18_RFID_INVENTORY_EVERY_S", "0.5"))
+        last_inventory_ts = 0.0  # forzar primer envío inmediato
 
-if __name__ == "__main__":
-    RFIDIngestService().run()
+        # --- Inventory RAW frame (exacto como rfid_simple_test.py) ---
+        frame_hex = settings.rfid_8a_frame_hex.strip().replace(" ", "")
+        if not frame_hex:
+            raise RuntimeError("Missing WAREHOUSE18_RFID_8A_FRAME_HEX in .env")
+        inv_frame = bytes.fromhex(frame_hex)
+
+        self._reader = RFIDReaderTCP(TCPConnectionConfig(host=self.cfg.host, port=self.cfg.port))
+        self._reader.connect()
+        log.info("RFID TCP connected")
+        self._status("connected", f"{self.cfg.host}:{self.cfg.port}")
+
+        log.info("Sending inventory RAW frame=%s", frame_hex.upper())
+        self._reader.send_raw(inv_frame)
+
+        # --- Forward a /rfid/ingest (opcional, para demo) ---
+        forward_to_ingest = os.getenv("WAREHOUSE18_RFID_FORWARD_TO_INGEST", "0") == "1"
+        ingest_url = os.getenv("WAREHOUSE18_RFID_INGEST_URL", "http://127.0.0.1:8000/api/rfid/ingest")
+        http_client = httpx.Client(timeout=1.0) if forward_to_ingest else None
+        if forward_to_ingest:
+            log.info("Forwarding RFID tags to ingest_url=%s", ingest_url)
+
+        try:
+            while not self._stop.is_set():
+                try:
+                    # Re-disparo del inventario (modo demo)
+                    now_ts = time.time()
+                    if (now_ts - last_inventory_ts) >= inventory_every_s:
+                        self._reader.send_raw(inv_frame)
+                        last_inventory_ts = now_ts
+
+                    got_any = False
+                    if int(time.time()) % 2 == 0:
+                        log.debug("RFID loop alive, waiting frames…")
+
+                    for raw in self._reader.recv_frames(window_s=3.0):
+                        got_any = True
+                        log.debug("RFID frame len=%s raw=%s", len(raw), raw.hex().upper())
+
+                        fr = decode_frame(raw)
+                        log.debug(
+                            "RFID decoded frame cmd=0x%02X data_len=%s data=%s",
+                            fr.cmd,
+                            len(fr.data),
+                            fr.data.hex().upper(),
+                        )
+
+                        tag = try_parse_tag_from_inventory(fr)
+                        if not tag:
+                            log.debug(
+                                "RFID frame ignored: cmd=0x%02X data=%s",
+                                fr.cmd,
+                                fr.data.hex().upper(),
+                            )
+                            continue
+
+                        if not self._is_valid_formatted_epc(tag.epc):
+                            log.debug(
+                                "TAG descartado por formato EPC no válido EPC=%s antenna=%s",
+                                tag.epc,
+                                tag.antenna,
+                            )
+                            continue
+
+                        log.debug("TAG válido detectado EPC=%s antenna=%s", tag.epc, tag.antenna)
+
+                        ev = RFIDReadEvent(
+                            epc=tag.epc,
+                            reader_id=self.cfg.reader_id,
+                            antenna=tag.antenna,
+                            rssi=float(tag.rssi_raw) if tag.rssi_raw is not None else None,
+                            seen_at=tag.seen_at,
+                            protocol="DDCT",
+                            raw=raw.hex().upper(),
+                        )
+
+                        # 1) SSE / monitor
+                        self._publish_from_thread({"type": "tag", **ev.to_dict()})
+
+                        # 2) Forward al endpoint ingest (para que se ejecute la lógica real de user/item)
+                        if http_client is not None:
+                            try:
+                                http_client.post(
+                                    ingest_url,
+                                    json={"epc": ev.epc, "antenna": ev.antenna, "rssi": ev.rssi},
+                                )
+                            except Exception:
+                                pass
+
+                    if not got_any:
+                        continue
+
+                except TimeoutError:
+                    continue
+                except (ConnectionError, OSError) as e:
+                    self._status("disconnected", str(e))
+                    try:
+                        self._reader.close()
+                    except Exception:
+                        pass
+                    raise
+        finally:
+            if http_client is not None:
+                http_client.close()

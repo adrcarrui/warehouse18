@@ -42,30 +42,34 @@ def _hex(b: bytes) -> str:
 
 def try_parse_tag_from_inventory(frame: Frame) -> Optional[TagRead]:
     """
-    Parse seguro para inventario:
-    Espera layout: FreqAnt(2) + PC(2) + EPC(N) + RSSI(1)
-    Solo devuelve TagRead si el EPC tiene una longitud razonable.
+    Parse para respuesta 0x8A observado en rfid_simple_test.py.
+
+    Layout de frame.data:
+        FreqAnt(1) + PC(2) + EPC(N) + RSSI(1)
+
+    Donde:
+      - FreqAnt: 1 byte
+      - PC: 2 bytes
+      - EPC: longitud variable
+      - RSSI: 1 byte final
     """
     d = frame.data
-    # mínimo: 2 + 2 + 1 (EPC mínimo 1 byte) + 1 RSSI = 6
-    if len(d) < 6:
+    if frame.cmd != 0x8A:
+        return None
+    # mínimo: FreqAnt(1) + PC(2) + EPC(1 byte mínimo) + RSSI(1) = 5 bytes
+    if len(d) < 5:
         return None
 
-    # EPC_len = total - (FreqAnt2 + PC2 + RSSI1)
-    epc_len = len(d) - 5
+    freq_ant = d[0]
+    ant_id = freq_ant & 0x03
+
+    # EPC_len = total - (FreqAnt1 + PC2 + RSSI1)
+    epc_len = len(d) - 4
     if epc_len <= 0:
         return None
 
-    # EPC típico: 12 bytes (96-bit) o 24 bytes (192-bit), etc.
-    # Aceptamos múltiplos de 2 bytes y un rango razonable.
-    if epc_len % 2 != 0 or not (4 <= epc_len <= 64):
-        return None
-
-    freq_ant = int.from_bytes(d[0:2], "big")
-    ant_id = freq_ant & 0x03
-
-    epc_bytes = d[4:4 + epc_len]
-    rssi = d[4 + epc_len]
+    epc_bytes = d[3:3 + epc_len]
+    rssi = d[3 + epc_len]
 
     epc = epc_bytes.hex().upper()
     if not epc:
@@ -78,7 +82,6 @@ def try_parse_tag_from_inventory(frame: Frame) -> Optional[TagRead]:
         seen_at=datetime.now(timezone.utc),
         cmd=frame.cmd,
     )
-
 
 def pretty_frame(frame: Frame) -> str:
     """

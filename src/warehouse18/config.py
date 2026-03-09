@@ -15,7 +15,8 @@ class Settings(BaseSettings):
     rfid_internal_enable: bool = False
     rfid_host: str = "192.168.0.178"
     rfid_port: int = 4001
-    rfid_8a_frame_hex: str = ""  
+    rfid_8a_frame_hex: str = "" 
+    rfid_log_level: str = "INFO" 
 
     model_config = SettingsConfigDict(
         env_prefix="WAREHOUSE18_",

@@ -154,19 +154,26 @@ class RFIDReaderService:
                     got_any = False
                     if int(time.time()) % 2 == 0:
                         log.debug("RFID loop alive, waiting frames…")
-                    for chunk in self._reader.recv_chunks(window_s=3.0):
+                    for raw in self._reader.recv_frames(window_s=3.0):
                         got_any = True
+                        log.debug("RFID frame len=%s raw=%s",len(raw),raw.hex().upper(),)
+                        fr = decode_frame(raw)
                         log.debug(
-                            "RFID raw frame len=%s hex_head=%s",
-                            len(chunk),
-                            chunk[:12].hex().upper(),
+                            "RFID decoded frame cmd=0x%02X data_len=%s data=%s",
+                            fr.cmd,
+                            len(fr.data),
+                            fr.data.hex().upper(),
                         )
 
-                        fr = decode_frame(chunk)
                         tag = try_parse_tag_from_inventory(fr)
                         if not tag:
+                            log.debug(
+                                "RFID frame ignored: cmd=0x%02X data=%s",
+                                fr.cmd,
+                                fr.data.hex().upper(),
+                            )
                             continue
-
+                        log.debug("TAG detectado EPC=%s antenna=%s", tag.epc, tag.antenna)
                         ev = RFIDReadEvent(
                             epc=tag.epc,
                             reader_id=self.cfg.reader_id,
@@ -174,7 +181,7 @@ class RFIDReaderService:
                             rssi=float(tag.rssi_raw) if tag.rssi_raw is not None else None,
                             seen_at=tag.seen_at,
                             protocol="DDCT",
-                            raw=chunk.hex().upper(),
+                            raw=raw.hex().upper(),
                         )
 
                         # 1) SSE / monitor

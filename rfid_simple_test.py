@@ -1,7 +1,7 @@
 import socket
 import time
 
-HOST = "192.168.0.178"
+HOST = "192.168.0.101"
 PORT = 4001
 
 HEADER = "A0"
@@ -36,7 +36,7 @@ def parse_8A(resp_bytes):
 # MISMA trama que usabas en RFIDfull.py
 BODY = "15018A000101010201030104000500060007000501"
 FRAME = build_frame(BODY)
-
+print("Trama a enviar:", FRAME.hex().upper())
 print("Iniciando prueba simple RFID...")
 print("Acerca una tag a la antena...\n")
 

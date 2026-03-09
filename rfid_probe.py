@@ -9,7 +9,7 @@ from typing import Optional
 # =========================
 # Config
 # =========================
-HOST = "192.168.0.178"
+HOST = "192.168.0.101"
 PORT = 4001
 
 # Payload que ya te funcionaba en _dev_test_tcp.py (data del cmd 0x8A)
@@ -17,7 +17,7 @@ PAYLOAD_8A_HEX = "000101010201030104000500060007000501"
 
 POLL_INTERVAL_S = 0.20      # cada cuánto pedimos inventario
 RECV_WINDOW_S = 1.2         # cuánto tiempo escuchamos después de pedir inventario
-SOCKET_TIMEOUT_S = 0.2      # timeout corto para recv
+SOCKET_TIMEOUT_S = 2.0      # timeout corto para recv
 
 
 # =========================
@@ -35,7 +35,7 @@ def build_frame(addr: int, cmd: int, data: bytes) -> bytes:
     body = bytes([addr, cmd]) + data
     length = len(body) + 1  # + chk
     frame_wo_chk = bytes([HEAD, length]) + body
-    chk = (256 - (sum(frame_wo_chk[1:]) % 256)) % 256
+    chk = (256 - (sum(frame_wo_chk) % 256)) % 256
     return frame_wo_chk + bytes([chk])
 
 
@@ -106,59 +106,54 @@ def try_extract_epc_any(frame: ParsedFrame) -> Optional[str]:
 
 def main() -> None:
     inv_payload = bytes.fromhex(PAYLOAD_8A_HEX)
-
+    
+    frame = build_frame(addr=0x01, cmd=0x8A, data=inv_payload)
+    print("PAYLOAD_8A_HEX:", frame.hex().upper())
     print(f"[CFG] reader={HOST}:{PORT}")
     print(f"[CFG] 8A payload={PAYLOAD_8A_HEX}")
-    print("Conectando...")
+    print("Acerca una tag a la antena... (Ctrl+C para salir)")
 
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(2.0)
-    s.connect((HOST, PORT))
-    s.settimeout(SOCKET_TIMEOUT_S)
-
-    print("Conectado. Acerca una tag a la antena... (Ctrl+C para salir)")
-
-    rx = bytearray()
     try:
         while True:
-            # pide inventario
-            s.sendall(build_frame(addr=0x01, cmd=0x8A, data=inv_payload))
+            rx = bytearray()
 
-            # escucha ventana
-            t_end = time.time() + RECV_WINDOW_S
-            got = 0
-            while time.time() < t_end:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(2.0)
+                s.connect((HOST, PORT))
+                s.sendall(frame)
+
                 try:
                     chunk = s.recv(4096)
-                    if not chunk:
-                        raise ConnectionError("socket closed by reader")
-                    rx.extend(chunk)
-                    got += len(chunk)
+                    if chunk:
+                        rx.extend(chunk)
                 except socket.timeout:
-                    break
+                    pass
 
             frames = split_frames(rx)
 
             if frames:
                 for raw in frames:
                     fr = decode_frame(raw)
+                    print(
+                        f"[FRAME] cmd=0x{fr.cmd:02X} data_len={len(fr.data)} "
+                        f"data={fr.data.hex().upper()} raw={raw.hex().upper()}"
+                    )
+
                     if fr.cmd != 0x8A:
                         continue
+
                     epc = try_extract_epc_any(fr)
-                    print(
-                        f"[8A] data_len={len(fr.data):>3} data={fr.data.hex().upper()} "
-                        f"{'EPC=' + epc if epc else ''} RAW={raw.hex().upper()}"
-                    )
+                    if epc:
+                        print(f"[TAG] EPC={epc}")
+                    else:
+                        print("[8A] Frame recibido pero no pude extraer EPC")
             else:
-                # para que no parezca que está muerto
-                print("[...] no frames (acerca la tag más / cambia orientación)")
+                print("[...] no frames")
 
             time.sleep(POLL_INTERVAL_S)
 
     except KeyboardInterrupt:
         print("\nSaliendo...")
-    finally:
-        s.close()
 
 
 if __name__ == "__main__":

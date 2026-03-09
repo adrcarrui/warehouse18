@@ -1,7 +1,11 @@
+from warehouse18.config import settings
 import logging
 import os
+print(os.getenv("WAREHOUSE18_RFID_LOG_LEVEL"))
+log_level = os.getenv("WAREHOUSE18_RFID_LOG_LEVEL", "INFO").upper()
+print("##LOG LEVEL: ", log_level)
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=getattr(logging, getattr(settings, "rfid_log_level", "INFO").upper(), logging.INFO),
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 import asyncio
@@ -16,7 +20,6 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from warehouse18.rfid_settings import RfidSettings
-from warehouse18.config import settings
 from warehouse18.infrastructure.db import get_db
 from warehouse18.presentation.api.schemas import (
     ReceiveContainerIn, ConsumeContainerIn, TransferContainerIn,
