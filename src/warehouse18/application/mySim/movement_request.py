@@ -40,14 +40,14 @@ class MovementRequest:
         if self.dest_uninstalled_part is not None or self.unistall_part is not None:
         # Si empiezas a usar estos campos, exige todos los obligatorios del workflow
             missing = []
-        if not self.unistall_part:
-            missing.append("unistall_part")
-        if not self.why_is_it_uninstalled:
-            missing.append("why_is_it_uninstalled")
-        if not self.dest_uninstalled_part:
-            missing.append("dest_uninstalled_part")
-        if not self.uninstalled_by:
-            missing.append("uninstalled_by")
+            if not self.unistall_part:
+                missing.append("unistall_part")
+            if not self.why_is_it_uninstalled:
+                missing.append("why_is_it_uninstalled")
+            if not self.dest_uninstalled_part:
+                missing.append("dest_uninstalled_part")
+            if not self.uninstalled_by:
+                missing.append("uninstalled_by")
 
-        if missing:
-            raise ValueError(f"Device workflow requiere: {', '.join(missing)}")
+            if missing:
+                raise ValueError(f"Device workflow requiere: {', '.join(missing)}")

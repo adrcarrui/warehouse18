@@ -3,6 +3,7 @@
   "version": 0,
   "checksum": "xor8",
   "families": {
+    "USER": 0,
     "GEN": 1,
     "A400M": 2,
     "A400": 3,
@@ -12,6 +13,19 @@
     "ITC": 7,
     "CHT": 8,
     "C295": 9,
-    "DARPT": 10
+    "DARPT": 10,
+    "CN235": 11
+  },
+  "display_padding": {
+    "GEN": 6,
+    "A400M": 6,
+    "A400": 3,
+    "235": 4,
+    "295": 4,
+    "MRTT": 6,
+    "ITC": 6,
+    "CHT": 8,
+    "C295": 6,
+    "DARPT": 6
   }
 }

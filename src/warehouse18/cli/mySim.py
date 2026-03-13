@@ -104,7 +104,84 @@ def _cfg_debug_attrs(cfg: object) -> str:
             continue
     return ", ".join(filtered)
 
+def _movement_type_to_mysim_id(mt: MovementType) -> int:
+    """
+    IDs de movementType en mySim.
+    Ajusta aquí si cambian en tu entorno.
+    """
+    mapping = {
+        MovementType.GOOD_RECEIPT: 57,
+        MovementType.GOOD_ISSUE: 58,
+        MovementType.GOOD_TRANSFER: 59,
+        MovementType.GOOD_TRACKING: 234,
+    }
+    try:
+        return mapping[mt]
+    except KeyError:
+        raise typer.BadParameter(f"No hay mapping mySim para movement type: {mt}")
 
+
+def _movement_type_to_mysim_name(mt: MovementType) -> str:
+    """
+    Nombre de movementType en mySim.
+    """
+    mapping = {
+        MovementType.GOOD_RECEIPT: "Good Receipt",
+        MovementType.GOOD_ISSUE: "Good Issue",
+        MovementType.GOOD_TRANSFER: "Good Transfer",
+        MovementType.GOOD_TRACKING: "Good Tracking",
+    }
+    try:
+        return mapping[mt]
+    except KeyError:
+        raise typer.BadParameter(f"No hay mapping mySim name para movement type: {mt}")
+
+
+def _post_movement_direct(
+    cfg: MySimConfig,
+    row: dict[str, Any],
+    *,
+    allow_redirects: bool = False,
+) -> dict[str, Any]:
+    """
+    Replica el script manual que sí funciona:
+      POST /set?entity=movement&extraQuery=BASE64("t.idCol='X' AND t.entity='Parts'")
+    """
+    extra_query_expr = f"t.idCol='{row['idCol']}' AND t.entity='Parts'"
+    extra_query = _b64(extra_query_expr)
+
+    url = f"{cfg.base_url.rstrip('/')}/set"
+    params = {
+        "entity": "movement",
+        "extraQuery": extra_query,
+    }
+    headers = {
+        "Accept": "application/json",
+        "X-AUTH-TOKEN": cfg.token,
+    }
+
+    rprint(f"[cyan]ROW SENT TO MYSIM /set[/cyan]: {row}")
+    resp = requests.post(
+        url,
+        headers=headers,
+        params=params,
+        json=[row],
+        timeout=60,
+        allow_redirects=allow_redirects,
+    )
+
+    if not resp.ok:
+        payload: dict[str, Any] = {
+            "status_code": resp.status_code,
+            "location": resp.headers.get("Location"),
+            "body_head": resp.text[:500],
+        }
+        raise MySimError(status_code=resp.status_code, payload=payload)
+
+    try:
+        return resp.json()
+    except ValueError:
+        return {"status_code": resp.status_code, "text": resp.text[:2000]}
 # -----------------------------
 # MOVEMENTS (direct mySim query by movementId via extraQuery)
 # -----------------------------
@@ -356,16 +433,12 @@ def parts_last_movement(
 
 
 @parts_app.command("upload-movement")
+@parts_app.command("upload-movement")
 def parts_upload_movement(
     part_db_id: int | None = typer.Option(None, "--part-db-id", help="ID interno (db id) del part."),
     part_code: str | None = typer.Option(None, "--part-code", help="Código partId (ej 235-0839)."),
 
     movement_type: MovementType = typer.Option(..., "--type", help="Tipo de movimiento (lógica warehouse18)."),
-    movement_type_id: int | None = typer.Option(
-        None,
-        "--movement-type-id",
-        help="Sobrescribe movementType con el ID numérico de mySim (ej 58).",
-    ),
 
     dest: str | None = typer.Option(None, "--dest", help="destinationLocation (obligatorio según tipo)."),
     origin: str | None = typer.Option(None, "--origin", help="sourceLocation (obligatorio para Good receipt)."),
@@ -376,49 +449,19 @@ def parts_upload_movement(
 
     done_by: str | None = typer.Option(None, "--done-by", help="doneBy (opcional)."),
     date: str | None = typer.Option(None, "--date", help="YYYY-MM-DD HH:MM (o HH:MM:SS) (opcional)."),
+    quantity: int = typer.Option(1, "--qty", help="quantity."),
+    parent_record: str | None = typer.Option(None, "--parent-record", help="parentRecord (opcional)."),
+    version_installed: str | None = typer.Option(None, "--version-installed", help="versionInstalled (opcional)."),
+
     as_json: bool = typer.Option(True, "--json/--no-json", help="Imprimir respuesta JSON."),
-
-    uninstall_part_db_id: int | None = typer.Option(
-        None,
-        "--uninstall-part-db-id",
-        help="ID interno del part a desinstalar (mySim).",
-    ),
-    uninstall_part_code: str | None = typer.Option(
-        None,
-        "--uninstall-part-code",
-        help="Código del part a desinstalar (ej 2806 o 235-0839).",
-    ),
-
-    uninstall_part: str | None = typer.Option(
-        None,
-        "--uninstall-part",
-        help="Alias: código del part a desinstalar (equivalente a --uninstall-part-code).",
-    ),
-    unistall_part: str | None = typer.Option(
-        None,
-        "--unistall-part",
-        help="(deprecated) Alias mal escrito de --uninstall-part. Se mantiene por compatibilidad.",
-    ),
-
-    why_uninstalled: str | None = typer.Option(
-        None,
-        "--why-uninstalled",
-        help="Razón (API: whyIsItUninstalled). Obligatorio si desinstalas.",
-    ),
-    dest_uninstalled_part: int | None = typer.Option(
-        None,
-        "--dest-uninstalled-part",
-        help="Location ID destino de la pieza desinstalada (API: destUninstalledPart).",
-    ),
-    uninstalled_by: int | None = typer.Option(
-        None,
-        "--uninstalled-by",
-        help="User ID de quien desinstala (API: uninstalledBy).",
-    ),
 ):
     """
-    Crea/sube un movimiento para un part, aplicando reglas del almacén.
+    Crea/sube un movimiento para un part usando POST directo a:
+      /set?entity=movement&extraQuery=...
+    igual que el script manual que sí funciona.
     """
+    load_dotenv()
+    cfg = MySimConfig.from_env()
     api = _bootstrap()
 
     pid = _resolve_part_db_id(api, part_db_id, part_code)
@@ -426,28 +469,7 @@ def parts_upload_movement(
     final_dest = dest_special.value if dest_special else dest
     final_origin = origin_special.value if origin_special else origin
 
-    final_uninstall_code = uninstall_part_code or uninstall_part or unistall_part
-
-    uninstall_part_id: int | None = None
-    if uninstall_part_db_id is not None:
-        uninstall_part_id = uninstall_part_db_id
-    elif final_uninstall_code:
-        found = api.get_part_id_by_part_code(final_uninstall_code)
-        if found is None:
-            raise typer.BadParameter(f"No se encontró uninstall partCode={final_uninstall_code} en mySim.")
-        uninstall_part_id = found
-
-    if uninstall_part_id is not None:
-        missing = []
-        if not why_uninstalled:
-            missing.append("--why-uninstalled")
-        if dest_uninstalled_part is None:
-            missing.append("--dest-uninstalled-part")
-        if uninstalled_by is None:
-            missing.append("--uninstalled-by")
-        if missing:
-            raise typer.BadParameter("Para desinstalar debes indicar también: " + ", ".join(missing))
-
+    # Validación funcional básica
     req = MovementRequest(
         part_db_id=pid,
         movement_type=movement_type,
@@ -456,17 +478,53 @@ def parts_upload_movement(
         description=desc,
         done_by=done_by,
         date=date,
-        unistall_part=str(uninstall_part_id) if uninstall_part_id is not None else None,
-        why_is_it_uninstalled=why_uninstalled,
-        dest_uninstalled_part=dest_uninstalled_part,
-        uninstalled_by=uninstalled_by,
     )
 
     try:
-        resp = api.create_movement(req)
+        req.validate()
     except ValueError as ve:
         rprint(f"[red]Validación[/red]: {ve}")
         raise typer.Exit(code=2)
+
+    movement_type_id = _movement_type_to_mysim_id(movement_type)
+    movement_type_name = _movement_type_to_mysim_name(movement_type)
+
+    row: dict[str, Any] = {
+        "id": 0,
+        "entity": "Parts",
+        "idCol": pid,
+        "movementType": movement_type_id,
+        "movementType.name": movement_type_name,
+        "quantity": quantity,
+        "movementDescription": desc,
+    }
+
+    if done_by is not None:
+        try:
+            row["doneBy"] = int(done_by)
+        except ValueError:
+            row["doneBy"] = done_by
+
+    if date:
+        row["date"] = date
+
+    if final_origin:
+        row["sourceLocation"] = final_origin
+
+    if final_dest:
+        row["destinationLocation"] = final_dest
+
+    # Para parecerse más al script manual que te funciona
+    if parent_record:
+        row["parentRecord"] = parent_record
+    elif part_code:
+        row["parentRecord"] = part_code
+
+    if version_installed is not None:
+        row["versionInstalled"] = version_installed
+
+    try:
+        resp = _post_movement_direct(cfg, row)
     except MySimError as e:
         rprint(f"[red]MySimError[/red] status={e.status_code}")
         if e.payload:

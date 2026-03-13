@@ -23,3 +23,4 @@ class Movement(Base):
     notes = Column(Text, nullable=True)
 
     item_key = Column(Text, nullable=True)  # denormalized for easier querying
+    mysim_user_id = Column(BigInteger, nullable=True, index=True)  # denormalized for easier querying

@@ -14,6 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import inspect
+log = logging.getLogger("warehouse18.rfid.service")
+log.warning("RFID MODULE LOADED FROM: %s", __file__)
 import os
 import threading
 import time
@@ -26,11 +29,11 @@ import httpx
 
 from warehouse18.config import settings
 from warehouse18.domain.rfid import RFIDReadEvent, ReaderStatusEvent
-from warehouse18.infrastructure.rfid.epc96 import EPCSchema, load_epc_schema, parse_epc96
+from warehouse18.application.rfid.epc96 import EPCSchema, load_epc_schema, parse_epc96
 from warehouse18.infrastructure.rfid.parser import decode_frame, try_parse_tag_from_inventory
 from warehouse18.infrastructure.rfid.tcp_client import RFIDReaderTCP, TCPConnectionConfig
 
-log = logging.getLogger("warehouse18.rfid.service")
+
 
 Publisher = Callable[[dict[str, Any]], Any]
 
@@ -60,6 +63,9 @@ class RFIDReaderService:
         publish: Publisher,
         loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
+        log.warning("RFID CLASS SOURCE FILE = %s", inspect.getsourcefile(self.__class__))
+        log.warning("RFID SERVICE VERSION = EPC_FILTER_ACTIVE")
+        log.warning("RFID SERVICE CLASS FILE = %s", __file__)
         self.cfg = cfg
         self._publish = publish
         self._loop = loop
@@ -121,39 +127,6 @@ class RFIDReaderService:
         )
         self._publish_from_thread({"type": "reader_status", **ev.to_dict()})
 
-    def _is_valid_formatted_epc(self, epc: str) -> bool:
-        """
-        Acepta solo EPCs de 96 bits (24 hex chars) que cumplan:
-          - magic correcto
-          - version correcta
-          - checksum xor8 correcto
-          - family reconocida en schema
-        """
-        if self._epc_schema is None:
-            return False
-
-        try:
-            parsed = parse_epc96(epc, self._epc_schema)
-            ok = (
-                parsed.magic == self._epc_schema.magic
-                and parsed.version == self._epc_schema.version
-                and parsed.checksum_ok
-                and parsed.family_name is not None
-            )
-            if not ok:
-                log.debug(
-                    "TAG descartado | epc=%s magic=%04X version=%s family=%s checksum_ok=%s",
-                    epc,
-                    parsed.magic,
-                    parsed.version,
-                    parsed.family_name,
-                    parsed.checksum_ok,
-                )
-            return ok
-        except Exception as e:
-            log.debug("TAG descartado | epc=%s motivo=%s", epc, e)
-            return False
-
     def _run(self) -> None:
         backoff = self.cfg.reconnect_seconds
         while not self._stop.is_set():
@@ -166,7 +139,23 @@ class RFIDReaderService:
                 time.sleep(backoff)
         self._status("disconnected", "stopped")
 
+    def _is_valid_formatted_epc(self, epc: str) -> bool:
+        if self._epc_schema is None:
+            return False
+
+        try:
+            parsed = parse_epc96(epc, self._epc_schema)
+            return (
+                parsed.magic == self._epc_schema.magic
+                and parsed.version == self._epc_schema.version
+                and parsed.checksum_ok
+                and parsed.family_name is not None
+            )
+        except Exception:
+            return False
+
     def _connect_and_loop(self) -> None:
+        log.warning("ENTERING _connect_and_loop WITH EPC FILTER")
         inventory_every_s = float(os.getenv("WAREHOUSE18_RFID_INVENTORY_EVERY_S", "0.5"))
         last_inventory_ts = 0.0  # forzar primer envío inmediato
 
@@ -225,6 +214,8 @@ class RFIDReaderService:
                             )
                             continue
 
+                        log.debug("TAG leído EPC=%s len=%s antenna=%s", tag.epc, len(tag.epc), tag.antenna)
+
                         if not self._is_valid_formatted_epc(tag.epc):
                             log.debug(
                                 "TAG descartado por formato EPC no válido EPC=%s antenna=%s",
@@ -232,7 +223,12 @@ class RFIDReaderService:
                                 tag.antenna,
                             )
                             continue
-
+                        log.warning(
+                            "FILTER_CHECK EPC=%s LEN=%s ANT=%s",
+                            tag.epc,
+                            len(tag.epc),
+                            tag.antenna,
+                        )
                         log.debug("TAG válido detectado EPC=%s antenna=%s", tag.epc, tag.antenna)
 
                         ev = RFIDReadEvent(
