@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import time
 from dataclasses import dataclass
@@ -12,8 +11,6 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from warehouse18.application.rfid.epc96 import EPCSchema, load_epc_schema, parse_epc96
-
-# Ajusta estos imports si en tu proyecto están en otra ruta
 from warehouse18.infrastructure.db import get_db
 from warehouse18.domain.models.app_setting import AppSetting
 from warehouse18.domain.models.movement import Movement
@@ -22,10 +19,21 @@ from warehouse18.domain.models.user import User
 
 log = logging.getLogger("warehouse18.rfid")
 
-router = APIRouter(prefix="/api/rfid", tags=["rfid"])
+# OJO:
+# main.py ya incluye este router con prefix=settings.api_prefix
+# así que aquí NO pongas "/api/rfid" o acabarás con /api/api/rfid
+router = APIRouter(prefix="/rfid", tags=["rfid"])
 
-ROOT = Path(__file__).resolve().parents[3]
-EPC_SCHEMA_PATH = ROOT / "config" / "epc_schema.json"
+# rfid_ingest.py está en:
+# src/warehouse18/presentation/api/routes/rfid_ingest.py
+# parents[0] = routes
+# parents[1] = api
+# parents[2] = presentation
+# parents[3] = warehouse18
+# parents[4] = src
+# parents[5] = raíz repo
+REPO_ROOT = Path(__file__).resolve().parents[5]
+EPC_SCHEMA_PATH = REPO_ROOT / "config" / "epc_schema.json"
 
 
 class RFIDIngestIn(BaseModel):
@@ -57,7 +65,6 @@ ANTENNA_MAP: dict[int, AntennaRoute] = {
     ),
 }
 
-# Estado en memoria. Nada glamuroso, pero funcional.
 USER_PRESENCE_TTL_S = 600
 USER_BIND_TTL_S = 20
 USER_COOLDOWN_S = 2
@@ -73,17 +80,25 @@ _epc_schema: EPCSchema | None = None
 def _get_schema() -> EPCSchema:
     global _epc_schema
     if _epc_schema is None:
+        if not EPC_SCHEMA_PATH.exists():
+            raise FileNotFoundError(f"EPC schema not found: {EPC_SCHEMA_PATH}")
         _epc_schema = load_epc_schema(EPC_SCHEMA_PATH)
+        log.info("RFID EPC schema loaded | path=%s", EPC_SCHEMA_PATH)
     return _epc_schema
 
 
 def _parse_epc(epc: str) -> tuple[str, int]:
     """
-    Devuelve (family_name, serial_num) usando el MISMO parser EPC96 que service.py.
+    Devuelve (family_name, serial_num) usando el parser EPC96.
     """
     schema = _get_schema()
     parsed = parse_epc96(epc, schema)
     return parsed.family_name or "UNKNOWN", int(parsed.serial)
+
+
+def _build_item_key(family: str, serial_num: int) -> str:
+    family = str(family).strip().upper()
+    return f"{family}-{serial_num:06d}"
 
 
 def _rfid_create_movements_enabled(db: Session) -> bool:
@@ -143,7 +158,7 @@ def _cleanup_pending_cross(now_ts: float) -> None:
 
 def _find_recent_user_for_zone(zone: str, now_ts: float) -> int | None:
     """
-    Busca un usuario que haya sido visto en la zona en la ventana de bind.
+    Busca un usuario visto recientemente en esa zona.
     Devuelve el mysim_user_id.
     """
     best_user_id: int | None = None
@@ -177,6 +192,9 @@ def _create_local_movement(
     if mt is None:
         return False, f"movement_type_not_found:{movement_code}"
 
+    family, serial_num = _parse_epc(epc)
+    item_key = _build_item_key(family, serial_num)
+
     notes = (
         f"RFID app history | epc={epc} | door_id={current_route.door_id} | "
         f"route={'B->A' if movement_code == 'GR' else 'A->B'} | "
@@ -194,7 +212,7 @@ def _create_local_movement(
         reference_id=None,
         user_id=local_user_id,
         notes=notes,
-        item_key=epc,
+        item_key=item_key,
         mysim_user_id=mysim_user_id,
     )
 
@@ -203,10 +221,11 @@ def _create_local_movement(
     db.refresh(mv)
 
     log.info(
-        "RFID local movement created | movement_id=%s code=%s epc=%s local_user_id=%s mysim_user_id=%s",
+        "RFID local movement created | movement_id=%s code=%s epc=%s item_key=%s local_user_id=%s mysim_user_id=%s",
         mv.id,
         movement_code,
         epc,
+        item_key,
         local_user_id,
         mysim_user_id,
     )
@@ -256,9 +275,7 @@ def rfid_ingest(payload: RFIDIngestIn, db: Session = Depends(get_db)):
     _cleanup_user_presence(now_ts)
     _cleanup_pending_cross(now_ts)
 
-    # ------------------------------------------------------------------
     # USER
-    # ------------------------------------------------------------------
     if family_name == "USER":
         mysim_user_id = serial_num
         user_key = (route.zone, mysim_user_id)
@@ -302,9 +319,7 @@ def rfid_ingest(payload: RFIDIngestIn, db: Session = Depends(get_db)):
             "bind_ttl_seconds": USER_BIND_TTL_S,
         }
 
-    # ------------------------------------------------------------------
     # ITEM
-    # ------------------------------------------------------------------
     prev = _pending_cross_by_epc.get(epc)
 
     if prev is None:
@@ -330,7 +345,6 @@ def rfid_ingest(payload: RFIDIngestIn, db: Session = Depends(get_db)):
     prev_antenna: int = prev["antenna"]
     prev_ts: float = prev["ts"]
 
-    # misma antena otra vez -> refrescamos ventana y seguimos esperando
     if prev_antenna == payload.antenna:
         _pending_cross_by_epc[epc] = {
             "ts": now_ts,
@@ -370,9 +384,6 @@ def rfid_ingest(payload: RFIDIngestIn, db: Session = Depends(get_db)):
             "ref_key": epc,
         }
 
-    # cruce detectado
-    # 2 -> 1 = B->A = GR
-    # 1 -> 2 = A->B = GI
     if prev_antenna == 2 and payload.antenna == 1:
         movement_code = "GR"
         route_label = "B->A"
