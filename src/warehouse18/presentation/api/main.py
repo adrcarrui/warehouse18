@@ -28,7 +28,7 @@ from warehouse18.presentation.api.schemas import (
 )
 
 from warehouse18.infrastructure.config.antenna_map import (
-    load_antenna_map,
+    load_antenna_topology,
     resolve_antenna_map_path,
 )
 
@@ -87,16 +87,20 @@ app.state.settings_service = SettingsService(ttl_seconds=2)
 @app.on_event("startup")
 def _load_antenna_map_on_startup():
     path = resolve_antenna_map_path()
-    m = load_antenna_map(path)
-    app.state.antenna_map = m
-    print(f"[antenna_map] loaded reader={m.reader_name} ports={sorted(m.ports.keys())} from {path}")
+    topology = load_antenna_topology(path)
+    app.state.antenna_topology = topology
+
+    print(
+        f"[antenna_map] loaded readers={list(topology.readers.keys())} "
+        f"routes={sorted(topology.routes.keys())} from {path}"
+    )
 
 @app.on_event("startup")
 async def _start_rfid_reader_on_startup():
     print("DBG | env WAREHOUSE18_RFID_INTERNAL_ENABLE =", os.getenv("WAREHOUSE18_RFID_INTERNAL_ENABLE"))
     print("DBG | settings.rfid_internal_enable =", getattr(settings, "rfid_internal_enable", None))
     print("DBG | settings class =", type(settings))
-    # ✅ Nuevo: permitir desactivar el lector interno
+
     enable = bool(getattr(settings, "rfid_internal_enable", False))
     if not enable:
         logging.getLogger("warehouse18.rfid.service").info(
@@ -104,32 +108,67 @@ async def _start_rfid_reader_on_startup():
         )
         return
 
-    if getattr(app.state, "rfid_service", None):
-        return  # ya existe
+    topology = getattr(app.state, "antenna_topology", None)
+    if topology is None:
+        raise RuntimeError("antenna_topology not loaded on startup")
 
-    antenna_map = getattr(app.state, "antenna_map", None)
+    if getattr(app.state, "rfid_services", None):
+        return
 
-    cfg = RFIDServiceConfig(
-        reader_id=getattr(antenna_map, "reader_name", "reader-1"),
-        host=getattr(settings, "rfid_host", "192.168.0.178"),
-        port=int(getattr(settings, "rfid_port", 4001)),
-    )
+    app.state.rfid_services = {}
 
-    svc = RFIDReaderService(
-        cfg,
-        publish=publish_rfid_event,
-        loop=asyncio.get_running_loop(),
-    )
+    for reader_id, reader in topology.readers.items():
+        if not reader.enabled:
+            continue
 
-    svc.start()
-    app.state.rfid_service = svc
+        ants = sorted(
+            {
+                route.antenna
+                for route in topology.routes_for_reader(reader_id)
+                if route.enabled
+            }
+        )
+
+        if not ants:
+            logging.getLogger("warehouse18.rfid.service").warning(
+                "Skipping RFID reader %s because it has no active routes", reader_id
+            )
+            continue
+
+        cfg = RFIDServiceConfig(
+            reader_id=reader.reader_id,
+            host=reader.host,
+            port=reader.tcp_port,
+            ants=ants,
+        )
+
+        svc = RFIDReaderService(
+            cfg,
+            publish=publish_rfid_event,
+            loop=asyncio.get_running_loop(),
+        )
+        svc.start()
+        app.state.rfid_services[reader_id] = svc
+
+        logging.getLogger("warehouse18.rfid.service").info(
+            "RFID internal reader started | reader_id=%s host=%s port=%s ants=%s",
+            reader.reader_id,
+            reader.host,
+            reader.tcp_port,
+            ants,
+        )
 
 
 @app.on_event("shutdown")
 def _stop_rfid_reader_on_shutdown():
-    svc = getattr(app.state, "rfid_service", None)
-    if svc:
-        svc.stop()
+    services = getattr(app.state, "rfid_services", {}) or {}
+    for reader_id, svc in services.items():
+        try:
+            svc.stop()
+        except Exception:
+            logging.getLogger("warehouse18.rfid.service").exception(
+                "Failed stopping RFID reader %s", reader_id
+            )
 
 @app.get(f"{settings.api_prefix}/health")
 def health():

@@ -1,44 +1,37 @@
 {
-  "version": 1,
-  "updated_at": "2026-02-18",
+  "version": 2,
+  "updated_at": "2026-03-16",
   "readers": [
     {
-      "name": "Reader-ALM18-01",
-      "model": "E710",
-      "ip": "192.168.1.101",
-      "tcp_port": 0,
-      "ports": [
+      "reader_id": "reader-1",
+      "name": "Reader ALM18 01",
+      "host": "192.168.0.101",
+      "tcp_port": 4001,
+      "enabled": true
+    }
+  ],
+  "doors": [
+    {
+      "door_id": "door_demo_1",
+      "reader_id": "reader-1",
+      "zones": [
         {
-          "port": 0,
-          "logical_name": "Pasillo 1",
+          "antenna": 1,
+          "zone_id": "DOOR_1_A",
+          "zone_role": "A",
+          "logical_name": "Pasillo 1 interior",
           "location_id": 18,
-          "direction": "BOTH",
-          "is_active": false,
-          "notes": "Puerta principal, lado interior"
+          "mysim_location_env": "MYSIM_RFID_LOC_AISLE_1",
+          "enabled": true
         },
         {
-          "port": 1,
-          "logical_name": "Pasillo 1",
-          "location_id": 18,
-          "direction": "BOTH",
-          "is_active": true,
-          "notes": "Puerta principal, lado interior"
-        },
-        {
-          "port": 2,
-          "logical_name": "Pasillo 2",
+          "antenna": 2,
+          "zone_id": "DOOR_1_B",
+          "zone_role": "B",
+          "logical_name": "Pasillo 1 exterior",
           "location_id": 20,
-          "direction": "BOTH",
-          "is_active": true,
-          "notes": "Zona de paso/pruebas"
-        },
-        {
-          "port": 3,
-          "logical_name": "TBD",
-          "location_id": null,
-          "direction": "BOTH",
-          "is_active": false,
-          "notes": "Pendiente de instalación"
+          "mysim_location_env": "MYSIM_RFID_LOC_AISLE_2",
+          "enabled": true
         }
       ]
     }

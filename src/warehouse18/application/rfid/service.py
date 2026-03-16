@@ -272,7 +272,12 @@ class RFIDReaderService:
                             try:
                                 resp = http_client.post(
                                     ingest_url,
-                                    json={"epc": ev.epc, "antenna": ev.antenna, "rssi": ev.rssi},
+                                    json={
+                                        "epc": ev.epc,
+                                        "antenna": ev.antenna,
+                                        "rssi": ev.rssi,
+                                        "reader_id": ev.reader_id,
+                                    },
                                 )
                                 log.debug(
                                     "RFID ingest response | status=%s body=%s",

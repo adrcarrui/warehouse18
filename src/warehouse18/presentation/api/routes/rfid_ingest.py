@@ -5,8 +5,10 @@ import logging
 import os
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 import requests
 from fastapi import APIRouter, Depends
@@ -14,30 +16,23 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from warehouse18.application.rfid.epc96 import EPCSchema, load_epc_schema, parse_epc96
-from warehouse18.infrastructure.db import get_db
 from warehouse18.domain.models.app_setting import AppSetting
 from warehouse18.domain.models.movement import Movement
 from warehouse18.domain.models.movement_type import MovementType as LocalMovementType
 from warehouse18.domain.models.user import User
+from warehouse18.infrastructure.config.antenna_map import (
+    RouteConfig,
+    load_antenna_topology,
+    resolve_antenna_map_path,
+)
+from warehouse18.infrastructure.db import get_db
 from warehouse18.infrastructure.integrations.mySim import MySimClient, MySimConfig
 from warehouse18.infrastructure.integrations.mySim.adapter import MySimAdapter
 from warehouse18.infrastructure.integrations.mySim.errors import MySimError
 
 log = logging.getLogger("warehouse18.rfid")
-
-# OJO:
-# main.py ya incluye este router con prefix=settings.api_prefix
-# así que aquí NO pongas "/api/rfid" o acabarás con /api/api/rfid
 router = APIRouter(prefix="/rfid", tags=["rfid"])
 
-# rfid_ingest.py está en:
-# src/warehouse18/presentation/api/routes/rfid_ingest.py
-# parents[0] = routes
-# parents[1] = api
-# parents[2] = presentation
-# parents[3] = warehouse18
-# parents[4] = src
-# parents[5] = raíz repo
 REPO_ROOT = Path(__file__).resolve().parents[5]
 EPC_SCHEMA_PATH = REPO_ROOT / "config" / "epc_schema.json"
 
@@ -46,41 +41,49 @@ class RFIDIngestIn(BaseModel):
     epc: str
     antenna: int
     rssi: Optional[float] = None
+    reader_id: str = "reader-1"
 
 
-@dataclass(frozen=True)
-class AntennaRoute:
-    logical_name: str
-    location_id: int
-    zone: str
-    door_id: str
+@dataclass
+class DoorState:
+    state: str
+    ts: float
+    route: RouteConfig
+    cooldown_until: float = 0.0
+    seen_count_same_side: int = 1
 
 
-ANTENNA_MAP: dict[int, AntennaRoute] = {
-    1: AntennaRoute(
-        logical_name="Pasillo 1",
-        location_id=18,
-        zone="AISLE_1",
-        door_id="door_demo_1",
-    ),
-    2: AntennaRoute(
-        logical_name="Pasillo 2",
-        location_id=20,
-        zone="AISLE_2",
-        door_id="door_demo_1",
-    ),
-}
+@dataclass
+class PendingUserCross:
+    created_at: float
+    expires_at: float
+    epc: str
+    antenna: int
+    reader_id: str
+    rssi: float | None
+    current_route: RouteConfig
+    previous_route: RouteConfig
+    movement_code: str
+    route_label: str
 
-USER_PRESENCE_TTL_S = 600
-USER_BIND_TTL_S = 20
-USER_COOLDOWN_S = 2
-CROSS_WINDOW_S = 10
-
-_last_seen_user_by_zone: dict[tuple[str, int], float] = {}
-_last_user_cooldown_by_zone: dict[tuple[str, int], float] = {}
-_pending_cross_by_epc: dict[str, dict] = {}
 
 _epc_schema: EPCSchema | None = None
+_route_index: dict[tuple[str, int], RouteConfig] | None = None
+
+_current_user_by_door: dict[str, dict[str, Any]] = {}
+_last_seen_reader_event: dict[tuple[str, int, str], float] = {}
+_epc_state_by_door: dict[tuple[str, str], DoorState] = {}
+_pending_cross_by_door_epc: dict[tuple[str, str], PendingUserCross] = {}
+
+USER_PRESENCE_TTL_S = int(os.getenv("WAREHOUSE18_RFID_USER_PRESENCE_TTL_SECONDS", "600"))
+USER_BIND_TTL_S = int(os.getenv("WAREHOUSE18_RFID_USER_BIND_TTL_SECONDS", "20"))
+USER_COOLDOWN_S = float(os.getenv("WAREHOUSE18_RFID_USER_COOLDOWN_SECONDS", "2"))
+READER_DEDUPE_S = float(os.getenv("WAREHOUSE18_RFID_READER_DEDUPE_SECONDS", "0.6"))
+CROSS_WINDOW_S = float(os.getenv("WAREHOUSE18_RFID_CROSS_WINDOW_SECONDS", "6"))
+MOVE_COOLDOWN_S = float(os.getenv("WAREHOUSE18_RFID_MOVE_COOLDOWN_SECONDS", "5"))
+STATE_TTL_S = float(os.getenv("WAREHOUSE18_RFID_STATE_TTL_SECONDS", "20"))
+MIN_SEEN_COUNT_TO_CONFIRM = int(os.getenv("WAREHOUSE18_RFID_MIN_SEEN_COUNT_TO_CONFIRM", "1"))
+PENDING_USER_WINDOW_S = float(os.getenv("WAREHOUSE18_RFID_PENDING_USER_WINDOW_SECONDS", "3"))
 
 
 def _get_schema() -> EPCSchema:
@@ -93,10 +96,20 @@ def _get_schema() -> EPCSchema:
     return _epc_schema
 
 
+def _get_route_index() -> dict[tuple[str, int], RouteConfig]:
+    global _route_index
+    if _route_index is None:
+        topology = load_antenna_topology(resolve_antenna_map_path())
+        _route_index = topology.routes
+        log.info("RFID topology loaded | routes=%s", len(_route_index))
+    return _route_index
+
+
+def _resolve_route(reader_id: str, antenna: int) -> RouteConfig | None:
+    return _get_route_index().get((reader_id, antenna))
+
+
 def _parse_epc(epc: str) -> tuple[str, int]:
-    """
-    Devuelve (family_name, serial_num) usando el parser EPC96.
-    """
     schema = _get_schema()
     parsed = parse_epc96(epc, schema)
     return parsed.family_name or "UNKNOWN", int(parsed.serial)
@@ -107,79 +120,96 @@ def _build_item_key(family: str, serial_num: int) -> str:
     return f"{family}-{serial_num:06d}"
 
 
-def _rfid_create_movements_enabled(db: Session) -> bool:
-    row = (
-        db.query(AppSetting)
-        .filter(AppSetting.key == "rfid.create_movements")
-        .first()
+def _mysim_client_and_adapter() -> tuple[MySimClient, MySimAdapter]:
+    cfg = MySimConfig.from_env()
+    log.info(
+        "RFID mySim config | base_url=%s token_present=%s token_len=%s",
+        cfg.base_url,
+        bool(cfg.token),
+        len(cfg.token or ""),
     )
+    client = MySimClient(cfg)
+    api = MySimAdapter(client)
+    return client, api
+
+
+def _rfid_create_movements_enabled(db: Session) -> bool:
+    row = db.query(AppSetting).filter(AppSetting.key == "rfid.create_movements").first()
     if not row:
         return False
 
     value = row.value
     if isinstance(value, bool):
         return value
-
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
-
     return bool(value)
 
 
 def _movement_type_by_code(db: Session, code: str) -> LocalMovementType | None:
-    return (
-        db.query(LocalMovementType)
-        .filter(LocalMovementType.code == code)
-        .first()
-    )
+    return db.query(LocalMovementType).filter(LocalMovementType.code == code).first()
 
 
 def _resolve_local_user_by_mysim_id(db: Session, mysim_user_id: int) -> User | None:
-    return (
-        db.query(User)
-        .filter(User.mysim_id == mysim_user_id)
-        .first()
-    )
+    return db.query(User).filter(User.mysim_id == mysim_user_id).first()
 
 
-def _cleanup_user_presence(now_ts: float) -> None:
+def _cleanup_user_bindings(now_ts: float) -> None:
+    expired = [
+        door_id
+        for door_id, data in _current_user_by_door.items()
+        if (now_ts - float(data["ts"])) > USER_PRESENCE_TTL_S
+    ]
+    for door_id in expired:
+        _current_user_by_door.pop(door_id, None)
+
+
+def _cleanup_reader_dedupe(now_ts: float) -> None:
     expired = [
         key
-        for key, ts in _last_seen_user_by_zone.items()
-        if (now_ts - ts) > USER_PRESENCE_TTL_S
+        for key, ts in _last_seen_reader_event.items()
+        if (now_ts - ts) > READER_DEDUPE_S
     ]
     for key in expired:
-        _last_seen_user_by_zone.pop(key, None)
+        _last_seen_reader_event.pop(key, None)
 
 
-def _cleanup_pending_cross(now_ts: float) -> None:
+def _cleanup_epc_states(now_ts: float) -> None:
     expired = [
-        epc
-        for epc, data in _pending_cross_by_epc.items()
-        if (now_ts - data["ts"]) > CROSS_WINDOW_S
+        key
+        for key, state in _epc_state_by_door.items()
+        if (now_ts - state.ts) > STATE_TTL_S and now_ts >= state.cooldown_until
     ]
-    for epc in expired:
-        _pending_cross_by_epc.pop(epc, None)
+    for key in expired:
+        _epc_state_by_door.pop(key, None)
 
 
-def _find_recent_user_for_zone(zone: str, now_ts: float) -> int | None:
-    """
-    Busca un usuario visto recientemente en esa zona.
-    Devuelve el mysim_user_id.
-    """
-    best_user_id: int | None = None
-    best_ts = -1.0
+def _cleanup_pending_crosses(now_ts: float) -> None:
+    expired = [
+        key
+        for key, pending in _pending_cross_by_door_epc.items()
+        if now_ts > pending.expires_at
+    ]
+    for key in expired:
+        pending = _pending_cross_by_door_epc.pop(key, None)
+        if pending is not None:
+            log.info(
+                "RFID pending cross expired | door_id=%s epc=%s route=%s age=%.3f window=%.3f",
+                pending.current_route.door_id,
+                pending.epc,
+                pending.route_label,
+                now_ts - pending.created_at,
+                PENDING_USER_WINDOW_S,
+            )
 
-    for (seen_zone, user_id), ts in _last_seen_user_by_zone.items():
-        if seen_zone != zone:
-            continue
-        if (now_ts - ts) > USER_BIND_TTL_S:
-            continue
-        if ts > best_ts:
-            best_ts = ts
-            best_user_id = user_id
 
-    return best_user_id
+def _find_recent_user_for_door(door_id: str, now_ts: float) -> int | None:
+    data = _current_user_by_door.get(door_id)
+    if not data:
+        return None
+    if (now_ts - float(data["ts"])) > USER_BIND_TTL_S:
+        return None
+    return int(data["user_id"])
 
 
 def _mysim_b64(s: str) -> str:
@@ -187,46 +217,31 @@ def _mysim_b64(s: str) -> str:
 
 
 def _mysim_movement_type_id(code: str) -> int:
-    mapping = {
-        "GR": 57,   # Good Receipt
-        "GI": 58,   # Good Issue
-        "GT": 59,   # Good Transfer
-    }
+    mapping = {"GR": 57, "GI": 58, "GT": 59}
     if code not in mapping:
         raise ValueError(f"movement_code no soportado para mySim: {code}")
     return mapping[code]
 
 
 def _mysim_movement_type_name(code: str) -> str:
-    mapping = {
-        "GR": "Good Receipt",
-        "GI": "Good Issue",
-        "GT": "Good Transfer",
-    }
+    mapping = {"GR": "Good Receipt", "GI": "Good Issue", "GT": "Good Transfer"}
     if code not in mapping:
         raise ValueError(f"movement_code no soportado para mySim: {code}")
     return mapping[code]
 
 
-def _mysim_location_for_route(route: AntennaRoute) -> int:
-    env_map = {
-        "AISLE_1": os.getenv("MYSIM_RFID_LOC_AISLE_1"),
-        "AISLE_2": os.getenv("MYSIM_RFID_LOC_AISLE_2"),
-    }
-    raw = env_map.get(route.zone)
+def _mysim_location_for_route(route: RouteConfig) -> int:
+    if not route.mysim_location_env:
+        raise ValueError(
+            f"La ruta {route.zone_id} no tiene mysim_location_env configurado en antenna_map.json"
+        )
+
+    raw = os.getenv(route.mysim_location_env)
     if not raw:
         raise ValueError(
-            f"No existe mapping mySim para zone={route.zone}. "
-            f"Define la variable de entorno correspondiente."
+            f"No existe la variable de entorno {route.mysim_location_env} para zone={route.zone_id}"
         )
     return int(raw)
-
-
-def _mysim_client_and_adapter() -> tuple[MySimClient, MySimAdapter]:
-    cfg = MySimConfig.from_env()
-    client = MySimClient(cfg)
-    api = MySimAdapter(client)
-    return client, api
 
 
 def _post_movement_direct(
@@ -235,22 +250,12 @@ def _post_movement_direct(
     *,
     allow_redirects: bool = False,
 ) -> dict[str, Any]:
-    """
-    Replica el camino de la CLI que ya te funciona:
-      POST /set?entity=movement&extraQuery=BASE64("t.idCol='X' AND t.entity='Parts'")
-    """
     extra_query_expr = f"t.idCol='{row['idCol']}' AND t.entity='Parts'"
     extra_query = _mysim_b64(extra_query_expr)
 
     url = f"{cfg.base_url.rstrip('/')}/set"
-    params = {
-        "entity": "movement",
-        "extraQuery": extra_query,
-    }
-    headers = {
-        "Accept": "application/json",
-        "X-AUTH-TOKEN": cfg.token,
-    }
+    params = {"entity": "movement", "extraQuery": extra_query}
+    headers = {"Accept": "application/json", "X-AUTH-TOKEN": cfg.token}
 
     log.info("RFID -> mySim movement row | row=%s", row)
 
@@ -284,8 +289,8 @@ def _create_local_movement(
     epc: str,
     rssi: float | None,
     antenna: int,
-    current_route: AntennaRoute,
-    previous_route: AntennaRoute,
+    current_route: RouteConfig,
+    previous_route: RouteConfig,
     local_user_id: int,
     mysim_user_id: int,
 ) -> tuple[bool, dict[str, Any] | str]:
@@ -298,7 +303,8 @@ def _create_local_movement(
 
     notes = (
         f"RFID app history | epc={epc} | door_id={current_route.door_id} | "
-        f"route={'B->A' if movement_code == 'GR' else 'A->B'} | "
+        f"reader_id={current_route.reader_id} | "
+        f"route={previous_route.zone_role}->{current_route.zone_role} | "
         f"antenna={antenna} | rssi={rssi} | logical_name={current_route.logical_name} | "
         f"from_logical_name={previous_route.logical_name}"
     )
@@ -339,19 +345,19 @@ def _create_local_movement(
     return True, payload
 
 
+def _mysim_now_str() -> str:
+    return datetime.now(ZoneInfo("Europe/Madrid")).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _sync_movement_to_mysim(
     *,
     movement_code: str,
     item_key: str,
     mysim_user_id: int,
-    current_route: AntennaRoute,
-    previous_route: AntennaRoute,
+    current_route: RouteConfig,
+    previous_route: RouteConfig,
     description: str,
 ) -> dict[str, Any]:
-    """
-    Sube el movimiento a mySim usando el mismo patrón del CLI.
-    """
-    cfg, api = None, None
     client, api = _mysim_client_and_adapter()
     cfg = client.cfg
 
@@ -373,6 +379,7 @@ def _sync_movement_to_mysim(
         "movementType.name": movement_type_name,
         "quantity": 1,
         "movementDescription": description,
+        "date": _mysim_now_str(),
         "doneBy": int(mysim_user_id),
         "sourceLocation": int(source_location),
         "destinationLocation": int(destination_location),
@@ -380,16 +387,6 @@ def _sync_movement_to_mysim(
     }
 
     resp = _post_movement_direct(cfg, row)
-
-    log.info(
-        "RFID mySim movement sent | part_db_id=%s item_key=%s movement_code=%s doneBy=%s source=%s destination=%s",
-        part_db_id,
-        item_key,
-        movement_code,
-        mysim_user_id,
-        source_location,
-        destination_location,
-    )
 
     return {
         "part_db_id": int(part_db_id),
@@ -402,242 +399,84 @@ def _sync_movement_to_mysim(
     }
 
 
-@router.post("/ingest")
-def rfid_ingest(payload: RFIDIngestIn, db: Session = Depends(get_db)):
-    now_ts = time.time()
-    epc = payload.epc.strip().upper()
+def _start_or_refresh_state(door_id: str, epc: str, now_ts: float, route: RouteConfig) -> dict[str, Any]:
+    state = DoorState(
+        state=f"SEEN_{route.zone_role}",
+        ts=now_ts,
+        route=route,
+        cooldown_until=0.0,
+        seen_count_same_side=1,
+    )
+    _epc_state_by_door[(door_id, epc)] = state
 
     log.info(
-        "RFID INGEST RECEIVED | epc=%s antenna=%s rssi=%s",
+        "RFID cross started | door_id=%s reader_id=%s epc=%s state=%s zone=%s antenna=%s",
+        door_id,
+        route.reader_id,
         epc,
-        payload.antenna,
-        payload.rssi,
+        state.state,
+        route.zone_id,
+        route.antenna,
     )
 
-    route = ANTENNA_MAP.get(payload.antenna)
-    if route is None:
-        return {
-            "status": "ignored",
-            "reason": "unknown_antenna",
-            "epc": epc,
-            "antenna": payload.antenna,
-        }
+    return {
+        "status": "ok",
+        "reason": "awaiting_cross",
+        "epc": epc,
+        "antenna": route.antenna,
+        "reader_id": route.reader_id,
+        "logical_name": route.logical_name,
+        "location_id": route.location_id,
+        "zone": route.zone_id,
+        "route_mode": "door_engine",
+        "door_id": route.door_id,
+        "zone_role": route.zone_role,
+        "ref_key": f"{door_id}:{epc}",
+    }
 
-    try:
-        family_name, serial_num = _parse_epc(epc)
-    except Exception as e:
-        return {
-            "status": "ignored",
-            "reason": "invalid_epc",
-            "detail": str(e),
-            "epc": epc,
-            "antenna": payload.antenna,
-        }
 
-    log.info(
-        "DBG EPC FAMILY | epc=%s family=%s serial=%s antenna=%s",
-        epc,
-        family_name,
-        serial_num,
-        payload.antenna,
-    )
-
-    _cleanup_user_presence(now_ts)
-    _cleanup_pending_cross(now_ts)
-
-    # USER
-    if family_name == "USER":
-        mysim_user_id = serial_num
-        user_key = (route.zone, mysim_user_id)
-
-        last_seen = _last_user_cooldown_by_zone.get(user_key)
-        if last_seen is not None and (now_ts - last_seen) < USER_COOLDOWN_S:
-            return {
-                "status": "ignored",
-                "reason": "user_cooldown",
-                "epc": epc,
-                "antenna": payload.antenna,
-                "user_id": mysim_user_id,
-                "zone": route.zone,
-                "seconds_since_last": now_ts - last_seen,
-                "cooldown_seconds": USER_COOLDOWN_S,
-            }
-
-        _last_user_cooldown_by_zone[user_key] = now_ts
-        _last_seen_user_by_zone[user_key] = now_ts
-
-        log.info(
-            "RFID USER SEEN | user_id=%s zone=%s antenna=%s rssi=%s",
-            mysim_user_id,
-            route.zone,
-            payload.antenna,
-            payload.rssi,
-        )
-
-        return {
-            "status": "ok",
-            "reason": "user_seen",
-            "epc": epc,
-            "antenna": payload.antenna,
-            "logical_name": route.logical_name,
-            "location_id": route.location_id,
-            "zone": route.zone,
-            "route_mode": "dummy_door",
-            "door_id": route.door_id,
-            "user_id": mysim_user_id,
-            "presence_ttl_seconds": USER_PRESENCE_TTL_S,
-            "bind_ttl_seconds": USER_BIND_TTL_S,
-        }
-
-    # ITEM
-    prev = _pending_cross_by_epc.get(epc)
-
-    if prev is None:
-        _pending_cross_by_epc[epc] = {
-            "ts": now_ts,
-            "antenna": payload.antenna,
-            "route": route,
-        }
-        return {
-            "status": "ok",
-            "reason": "awaiting_cross",
-            "epc": epc,
-            "antenna": payload.antenna,
-            "logical_name": route.logical_name,
-            "location_id": route.location_id,
-            "zone": route.zone,
-            "route_mode": "dummy_door",
-            "door_id": route.door_id,
-            "ref_key": epc,
-        }
-
-    prev_route: AntennaRoute = prev["route"]
-    prev_antenna: int = prev["antenna"]
-    prev_ts: float = prev["ts"]
-
-    if prev_antenna == payload.antenna:
-        _pending_cross_by_epc[epc] = {
-            "ts": now_ts,
-            "antenna": payload.antenna,
-            "route": route,
-        }
-        return {
-            "status": "ok",
-            "reason": "awaiting_cross",
-            "epc": epc,
-            "antenna": payload.antenna,
-            "logical_name": route.logical_name,
-            "location_id": route.location_id,
-            "zone": route.zone,
-            "route_mode": "dummy_door",
-            "door_id": route.door_id,
-            "ref_key": epc,
-        }
-
-    delta_s = now_ts - prev_ts
-    if delta_s > CROSS_WINDOW_S:
-        _pending_cross_by_epc[epc] = {
-            "ts": now_ts,
-            "antenna": payload.antenna,
-            "route": route,
-        }
-        return {
-            "status": "ok",
-            "reason": "awaiting_cross",
-            "epc": epc,
-            "antenna": payload.antenna,
-            "logical_name": route.logical_name,
-            "location_id": route.location_id,
-            "zone": route.zone,
-            "route_mode": "dummy_door",
-            "door_id": route.door_id,
-            "ref_key": epc,
-        }
-
-    if prev_antenna == 2 and payload.antenna == 1:
-        movement_code = "GR"
-        route_label = "B->A"
-    elif prev_antenna == 1 and payload.antenna == 2:
-        movement_code = "GI"
-        route_label = "A->B"
-    else:
-        _pending_cross_by_epc.pop(epc, None)
-        return {
-            "status": "ignored",
-            "reason": "unsupported_cross",
-            "epc": epc,
-            "antenna": payload.antenna,
-        }
-
-    _pending_cross_by_epc.pop(epc, None)
-
-    mysim_user_id = _find_recent_user_for_zone(route.zone, now_ts)
-    if mysim_user_id is None:
-        return {
-            "status": "ignored",
-            "reason": "cross_detected_but_no_user",
-            "epc": epc,
-            "antenna": payload.antenna,
-            "logical_name": route.logical_name,
-            "location_id": route.location_id,
-            "zone": route.zone,
-            "route_mode": "dummy_door",
-            "door_id": route.door_id,
-            "route": route_label,
-            "movement_code": movement_code,
-            "ref_key": epc,
-        }
-
-    if not _rfid_create_movements_enabled(db):
-        return {
-            "status": "ok",
-            "reason": "movement_creation_disabled",
-            "epc": epc,
-            "antenna": payload.antenna,
-            "logical_name": route.logical_name,
-            "location_id": route.location_id,
-            "zone": route.zone,
-            "route_mode": "dummy_door",
-            "door_id": route.door_id,
-            "route": route_label,
-            "movement_code": movement_code,
-            "user_id": mysim_user_id,
-            "ref_key": epc,
-        }
-
+def _finalize_movement_for_user(
+    *,
+    db: Session,
+    epc: str,
+    antenna: int,
+    reader_id: str,
+    rssi: float | None,
+    current_route: RouteConfig,
+    previous_route: RouteConfig,
+    movement_code: str,
+    route_label: str,
+    mysim_user_id: int,
+) -> dict[str, Any]:
     local_user = _resolve_local_user_by_mysim_id(db, mysim_user_id)
     if local_user is None:
         return {
             "status": "ignored",
             "reason": "local_user_not_found_for_mysim_id",
             "epc": epc,
-            "antenna": payload.antenna,
-            "logical_name": route.logical_name,
-            "location_id": route.location_id,
-            "zone": route.zone,
-            "route_mode": "dummy_door",
-            "door_id": route.door_id,
+            "antenna": antenna,
+            "reader_id": reader_id,
+            "logical_name": current_route.logical_name,
+            "location_id": current_route.location_id,
+            "zone": current_route.zone_id,
+            "zone_role": current_route.zone_role,
+            "route_mode": "door_engine",
+            "door_id": current_route.door_id,
             "route": route_label,
             "movement_code": movement_code,
             "user_id": mysim_user_id,
-            "ref_key": epc,
+            "ref_key": f"{current_route.door_id}:{epc}",
         }
-
-    log.info(
-        "RFID local user resolve | mysim_user_id=%s local_user_id=%s",
-        mysim_user_id,
-        local_user.id,
-    )
 
     try:
         ok, local_result = _create_local_movement(
             db,
             movement_code=movement_code,
             epc=epc,
-            rssi=payload.rssi,
-            antenna=payload.antenna,
-            current_route=route,
-            previous_route=prev_route,
+            rssi=rssi,
+            antenna=antenna,
+            current_route=current_route,
+            previous_route=previous_route,
             local_user_id=local_user.id,
             mysim_user_id=mysim_user_id,
         )
@@ -647,10 +486,12 @@ def rfid_ingest(payload: RFIDIngestIn, db: Session = Depends(get_db)):
             "status": "ignored",
             "reason": "db_integrity_error",
             "epc": epc,
-            "antenna": payload.antenna,
-            "logical_name": route.logical_name,
-            "location_id": route.location_id,
-            "zone": route.zone,
+            "antenna": antenna,
+            "reader_id": reader_id,
+            "logical_name": current_route.logical_name,
+            "location_id": current_route.location_id,
+            "zone": current_route.zone_id,
+            "zone_role": current_route.zone_role,
             "detail": str(e),
             "movement_code": movement_code,
             "user_id": local_user.id,
@@ -662,10 +503,12 @@ def rfid_ingest(payload: RFIDIngestIn, db: Session = Depends(get_db)):
             "status": "ignored",
             "reason": str(local_result),
             "epc": epc,
-            "antenna": payload.antenna,
-            "logical_name": route.logical_name,
-            "location_id": route.location_id,
-            "zone": route.zone,
+            "antenna": antenna,
+            "reader_id": reader_id,
+            "logical_name": current_route.logical_name,
+            "location_id": current_route.location_id,
+            "zone": current_route.zone_id,
+            "zone_role": current_route.zone_role,
             "movement_code": movement_code,
             "user_id": local_user.id,
             "mysim_user_id": mysim_user_id,
@@ -676,7 +519,7 @@ def rfid_ingest(payload: RFIDIngestIn, db: Session = Depends(get_db)):
 
     mysim_description = (
         f"RFID {route_label} | epc={epc} | item_key={item_key} | "
-        f"door_id={route.door_id} | antenna={payload.antenna} | rssi={payload.rssi}"
+        f"door_id={current_route.door_id} | reader_id={reader_id} | antenna={antenna} | rssi={rssi}"
     )
 
     try:
@@ -684,8 +527,8 @@ def rfid_ingest(payload: RFIDIngestIn, db: Session = Depends(get_db)):
             movement_code=movement_code,
             item_key=item_key,
             mysim_user_id=mysim_user_id,
-            current_route=route,
-            previous_route=prev_route,
+            current_route=current_route,
+            previous_route=previous_route,
             description=mysim_description,
         )
         mysim_status = "ok"
@@ -700,12 +543,14 @@ def rfid_ingest(payload: RFIDIngestIn, db: Session = Depends(get_db)):
         "status": "ok",
         "reason": "movement_created",
         "epc": epc,
-        "antenna": payload.antenna,
-        "logical_name": route.logical_name,
-        "location_id": route.location_id,
-        "zone": route.zone,
-        "route_mode": "dummy_door",
-        "door_id": route.door_id,
+        "antenna": antenna,
+        "reader_id": reader_id,
+        "logical_name": current_route.logical_name,
+        "location_id": current_route.location_id,
+        "zone": current_route.zone_id,
+        "zone_role": current_route.zone_role,
+        "route_mode": "door_engine",
+        "door_id": current_route.door_id,
         "route": route_label,
         "movement_code": movement_code,
         "movement_id": movement_id,
@@ -718,3 +563,351 @@ def rfid_ingest(payload: RFIDIngestIn, db: Session = Depends(get_db)):
             "result": mysim_result,
         },
     }
+
+
+def _try_resolve_pending_crosses_for_user(
+    *,
+    db: Session,
+    door_id: str,
+    mysim_user_id: int,
+    now_ts: float,
+) -> dict[str, Any] | None:
+    candidates: list[tuple[tuple[str, str], PendingUserCross]] = [
+        (key, pending)
+        for key, pending in _pending_cross_by_door_epc.items()
+        if key[0] == door_id and now_ts <= pending.expires_at
+    ]
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda x: x[1].created_at, reverse=True)
+    key, pending = candidates[0]
+
+    log.info(
+        "RFID pending cross resolved by late user | door_id=%s epc=%s route=%s user_id=%s lag=%.3f",
+        door_id,
+        pending.epc,
+        pending.route_label,
+        mysim_user_id,
+        now_ts - pending.created_at,
+    )
+
+    _pending_cross_by_door_epc.pop(key, None)
+
+    return _finalize_movement_for_user(
+        db=db,
+        epc=pending.epc,
+        antenna=pending.antenna,
+        reader_id=pending.reader_id,
+        rssi=pending.rssi,
+        current_route=pending.current_route,
+        previous_route=pending.previous_route,
+        movement_code=pending.movement_code,
+        route_label=pending.route_label,
+        mysim_user_id=mysim_user_id,
+    )
+
+
+@router.post("/ingest")
+def rfid_ingest(payload: RFIDIngestIn, db: Session = Depends(get_db)):
+    now_ts = time.time()
+    epc = payload.epc.strip().upper()
+    reader_id = payload.reader_id.strip() or "reader-1"
+
+    _cleanup_user_bindings(now_ts)
+    _cleanup_reader_dedupe(now_ts)
+    _cleanup_epc_states(now_ts)
+    _cleanup_pending_crosses(now_ts)
+
+    route = _resolve_route(reader_id, payload.antenna)
+    if route is None:
+        return {
+            "status": "ignored",
+            "reason": "unknown_reader_or_antenna",
+            "epc": epc,
+            "antenna": payload.antenna,
+            "reader_id": reader_id,
+        }
+
+    if not route.enabled:
+        return {
+            "status": "ignored",
+            "reason": "route_disabled",
+            "epc": epc,
+            "antenna": payload.antenna,
+            "reader_id": reader_id,
+            "door_id": route.door_id,
+            "zone": route.zone_id,
+        }
+
+    try:
+        family_name, serial_num = _parse_epc(epc)
+    except Exception as e:
+        log.info(
+            "RFID EPC rejected | epc=%s reader_id=%s antenna=%s reason=invalid_epc detail=%s",
+            epc,
+            reader_id,
+            payload.antenna,
+            e,
+        )
+        return {
+            "status": "ignored",
+            "reason": "invalid_epc",
+            "detail": str(e),
+            "epc": epc,
+            "antenna": payload.antenna,
+            "reader_id": reader_id,
+        }
+
+    if family_name == "USER":
+        existing = _current_user_by_door.get(route.door_id)
+        if (
+            existing
+            and int(existing["user_id"]) == serial_num
+            and (now_ts - float(existing["ts"])) < USER_COOLDOWN_S
+        ):
+            return {
+                "status": "ignored",
+                "reason": "user_cooldown",
+                "epc": epc,
+                "antenna": payload.antenna,
+                "reader_id": reader_id,
+                "door_id": route.door_id,
+                "zone": route.zone_id,
+                "zone_role": route.zone_role,
+                "user_id": serial_num,
+            }
+
+        _current_user_by_door[route.door_id] = {
+            "user_id": serial_num,
+            "ts": now_ts,
+            "zone_id": route.zone_id,
+            "zone_role": route.zone_role,
+            "reader_id": route.reader_id,
+        }
+
+        resolved = _try_resolve_pending_crosses_for_user(
+            db=db,
+            door_id=route.door_id,
+            mysim_user_id=serial_num,
+            now_ts=now_ts,
+        )
+
+        if resolved is not None:
+            resolved["user_bind_reason"] = "late_user_resolution"
+            return resolved
+
+        return {
+            "status": "ok",
+            "reason": "user_seen",
+            "epc": epc,
+            "antenna": payload.antenna,
+            "reader_id": reader_id,
+            "logical_name": route.logical_name,
+            "location_id": route.location_id,
+            "zone": route.zone_id,
+            "zone_role": route.zone_role,
+            "route_mode": "door_engine",
+            "door_id": route.door_id,
+            "user_id": serial_num,
+            "presence_ttl_seconds": USER_PRESENCE_TTL_S,
+            "bind_ttl_seconds": USER_BIND_TTL_S,
+        }
+
+    dedupe_key = (reader_id, payload.antenna, epc)
+    last_seen = _last_seen_reader_event.get(dedupe_key)
+    if last_seen is not None and (now_ts - last_seen) < READER_DEDUPE_S:
+        return {
+            "status": "ignored",
+            "reason": "duplicate_reader_event",
+            "epc": epc,
+            "antenna": payload.antenna,
+            "reader_id": reader_id,
+            "door_id": route.door_id,
+            "zone": route.zone_id,
+            "zone_role": route.zone_role,
+        }
+
+    _last_seen_reader_event[dedupe_key] = now_ts
+
+    if route.zone_role not in {"A", "B"}:
+        return {
+            "status": "ignored",
+            "reason": "non_passage_zone",
+            "epc": epc,
+            "antenna": payload.antenna,
+            "reader_id": reader_id,
+            "door_id": route.door_id,
+            "zone": route.zone_id,
+            "zone_role": route.zone_role,
+        }
+
+    state_key = (route.door_id, epc)
+    state = _epc_state_by_door.get(state_key)
+
+    if state is None:
+        return _start_or_refresh_state(route.door_id, epc, now_ts, route)
+
+    if now_ts < state.cooldown_until:
+        return {
+            "status": "ignored",
+            "reason": "movement_cooldown",
+            "epc": epc,
+            "antenna": payload.antenna,
+            "reader_id": reader_id,
+            "door_id": route.door_id,
+            "zone": route.zone_id,
+            "zone_role": route.zone_role,
+            "cooldown_remaining": round(state.cooldown_until - now_ts, 3),
+        }
+
+    delta_s = now_ts - state.ts
+    if delta_s > CROSS_WINDOW_S:
+        log.info(
+            "RFID cross expired | door_id=%s epc=%s prev_role=%s current_role=%s delta=%.3f window=%.3f",
+            route.door_id,
+            epc,
+            state.route.zone_role,
+            route.zone_role,
+            delta_s,
+            CROSS_WINDOW_S,
+        )
+        return _start_or_refresh_state(route.door_id, epc, now_ts, route)
+
+    if state.route.zone_role == route.zone_role:
+        state.ts = now_ts
+        state.route = route
+        state.seen_count_same_side += 1
+
+        log.info(
+            "RFID bounce same side | door_id=%s epc=%s role=%s count=%s",
+            route.door_id,
+            epc,
+            route.zone_role,
+            state.seen_count_same_side,
+        )
+
+        return {
+            "status": "ok",
+            "reason": "bounce_same_side",
+            "epc": epc,
+            "antenna": payload.antenna,
+            "reader_id": reader_id,
+            "door_id": route.door_id,
+            "zone": route.zone_id,
+            "zone_role": route.zone_role,
+            "state": state.state,
+            "seen_count_same_side": state.seen_count_same_side,
+        }
+
+    if state.route.zone_role == "A" and route.zone_role == "B":
+        movement_code = os.getenv("WAREHOUSE18_RFID_MOVEMENT_A_TO_B", "GI").strip().upper()
+        route_label = "A->B"
+    elif state.route.zone_role == "B" and route.zone_role == "A":
+        movement_code = os.getenv("WAREHOUSE18_RFID_MOVEMENT_B_TO_A", "GR").strip().upper()
+        route_label = "B->A"
+    else:
+        return _start_or_refresh_state(route.door_id, epc, now_ts, route)
+
+    if state.seen_count_same_side < MIN_SEEN_COUNT_TO_CONFIRM:
+        log.info(
+            "RFID cross rejected weak evidence | door_id=%s epc=%s route=%s seen_count_same_side=%s min_required=%s",
+            route.door_id,
+            epc,
+            route_label,
+            state.seen_count_same_side,
+            MIN_SEEN_COUNT_TO_CONFIRM,
+        )
+        return _start_or_refresh_state(route.door_id, epc, now_ts, route)
+
+    log.info(
+        "RFID cross accepted | door_id=%s epc=%s reader_id=%s route=%s movement_code=%s prev_zone=%s current_zone=%s",
+        route.door_id,
+        epc,
+        reader_id,
+        route_label,
+        movement_code,
+        state.route.zone_id,
+        route.zone_id,
+    )
+
+    previous_route = state.route
+    state.ts = now_ts
+    state.route = route
+    state.cooldown_until = now_ts + MOVE_COOLDOWN_S
+    state.seen_count_same_side = 1
+
+    mysim_user_id = _find_recent_user_for_door(route.door_id, now_ts)
+    if mysim_user_id is None:
+        pending = PendingUserCross(
+            created_at=now_ts,
+            expires_at=now_ts + PENDING_USER_WINDOW_S,
+            epc=epc,
+            antenna=payload.antenna,
+            reader_id=reader_id,
+            rssi=payload.rssi,
+            current_route=route,
+            previous_route=previous_route,
+            movement_code=movement_code,
+            route_label=route_label,
+        )
+        _pending_cross_by_door_epc[(route.door_id, epc)] = pending
+
+        log.info(
+            "RFID cross pending user resolution | door_id=%s epc=%s route=%s window=%.3f",
+            route.door_id,
+            epc,
+            route_label,
+            PENDING_USER_WINDOW_S,
+        )
+
+        return {
+            "status": "ok",
+            "reason": "pending_user_resolution",
+            "epc": epc,
+            "antenna": payload.antenna,
+            "reader_id": reader_id,
+            "logical_name": route.logical_name,
+            "location_id": route.location_id,
+            "zone": route.zone_id,
+            "zone_role": route.zone_role,
+            "route_mode": "door_engine",
+            "door_id": route.door_id,
+            "route": route_label,
+            "movement_code": movement_code,
+            "ref_key": f"{route.door_id}:{epc}",
+            "pending_user_window_seconds": PENDING_USER_WINDOW_S,
+        }
+
+    if not _rfid_create_movements_enabled(db):
+        return {
+            "status": "ok",
+            "reason": "movement_creation_disabled",
+            "epc": epc,
+            "antenna": payload.antenna,
+            "reader_id": reader_id,
+            "logical_name": route.logical_name,
+            "location_id": route.location_id,
+            "zone": route.zone_id,
+            "zone_role": route.zone_role,
+            "route_mode": "door_engine",
+            "door_id": route.door_id,
+            "route": route_label,
+            "movement_code": movement_code,
+            "user_id": mysim_user_id,
+            "ref_key": f"{route.door_id}:{epc}",
+        }
+
+    return _finalize_movement_for_user(
+        db=db,
+        epc=epc,
+        antenna=payload.antenna,
+        reader_id=reader_id,
+        rssi=payload.rssi,
+        current_route=route,
+        previous_route=previous_route,
+        movement_code=movement_code,
+        route_label=route_label,
+        mysim_user_id=mysim_user_id,
+    )
