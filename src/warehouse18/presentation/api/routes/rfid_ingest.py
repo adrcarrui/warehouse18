@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import base64
 import logging
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
+import requests
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -14,8 +17,11 @@ from warehouse18.application.rfid.epc96 import EPCSchema, load_epc_schema, parse
 from warehouse18.infrastructure.db import get_db
 from warehouse18.domain.models.app_setting import AppSetting
 from warehouse18.domain.models.movement import Movement
-from warehouse18.domain.models.movement_type import MovementType
+from warehouse18.domain.models.movement_type import MovementType as LocalMovementType
 from warehouse18.domain.models.user import User
+from warehouse18.infrastructure.integrations.mySim import MySimClient, MySimConfig
+from warehouse18.infrastructure.integrations.mySim.adapter import MySimAdapter
+from warehouse18.infrastructure.integrations.mySim.errors import MySimError
 
 log = logging.getLogger("warehouse18.rfid")
 
@@ -120,10 +126,10 @@ def _rfid_create_movements_enabled(db: Session) -> bool:
     return bool(value)
 
 
-def _movement_type_by_code(db: Session, code: str) -> MovementType | None:
+def _movement_type_by_code(db: Session, code: str) -> LocalMovementType | None:
     return (
-        db.query(MovementType)
-        .filter(MovementType.code == code)
+        db.query(LocalMovementType)
+        .filter(LocalMovementType.code == code)
         .first()
     )
 
@@ -176,6 +182,101 @@ def _find_recent_user_for_zone(zone: str, now_ts: float) -> int | None:
     return best_user_id
 
 
+def _mysim_b64(s: str) -> str:
+    return base64.b64encode(s.encode("utf-8")).decode("ascii")
+
+
+def _mysim_movement_type_id(code: str) -> int:
+    mapping = {
+        "GR": 57,   # Good Receipt
+        "GI": 58,   # Good Issue
+        "GT": 59,   # Good Transfer
+    }
+    if code not in mapping:
+        raise ValueError(f"movement_code no soportado para mySim: {code}")
+    return mapping[code]
+
+
+def _mysim_movement_type_name(code: str) -> str:
+    mapping = {
+        "GR": "Good Receipt",
+        "GI": "Good Issue",
+        "GT": "Good Transfer",
+    }
+    if code not in mapping:
+        raise ValueError(f"movement_code no soportado para mySim: {code}")
+    return mapping[code]
+
+
+def _mysim_location_for_route(route: AntennaRoute) -> int:
+    env_map = {
+        "AISLE_1": os.getenv("MYSIM_RFID_LOC_AISLE_1"),
+        "AISLE_2": os.getenv("MYSIM_RFID_LOC_AISLE_2"),
+    }
+    raw = env_map.get(route.zone)
+    if not raw:
+        raise ValueError(
+            f"No existe mapping mySim para zone={route.zone}. "
+            f"Define la variable de entorno correspondiente."
+        )
+    return int(raw)
+
+
+def _mysim_client_and_adapter() -> tuple[MySimClient, MySimAdapter]:
+    cfg = MySimConfig.from_env()
+    client = MySimClient(cfg)
+    api = MySimAdapter(client)
+    return client, api
+
+
+def _post_movement_direct(
+    cfg: MySimConfig,
+    row: dict[str, Any],
+    *,
+    allow_redirects: bool = False,
+) -> dict[str, Any]:
+    """
+    Replica el camino de la CLI que ya te funciona:
+      POST /set?entity=movement&extraQuery=BASE64("t.idCol='X' AND t.entity='Parts'")
+    """
+    extra_query_expr = f"t.idCol='{row['idCol']}' AND t.entity='Parts'"
+    extra_query = _mysim_b64(extra_query_expr)
+
+    url = f"{cfg.base_url.rstrip('/')}/set"
+    params = {
+        "entity": "movement",
+        "extraQuery": extra_query,
+    }
+    headers = {
+        "Accept": "application/json",
+        "X-AUTH-TOKEN": cfg.token,
+    }
+
+    log.info("RFID -> mySim movement row | row=%s", row)
+
+    resp = requests.post(
+        url,
+        headers=headers,
+        params=params,
+        json=[row],
+        timeout=60,
+        allow_redirects=allow_redirects,
+    )
+
+    if not resp.ok:
+        payload: dict[str, Any] = {
+            "status_code": resp.status_code,
+            "location": resp.headers.get("Location"),
+            "body_head": resp.text[:500],
+        }
+        raise MySimError(status_code=resp.status_code, payload=payload)
+
+    try:
+        return resp.json()
+    except ValueError:
+        return {"status_code": resp.status_code, "text": resp.text[:2000]}
+
+
 def _create_local_movement(
     db: Session,
     *,
@@ -187,7 +288,7 @@ def _create_local_movement(
     previous_route: AntennaRoute,
     local_user_id: int,
     mysim_user_id: int,
-) -> tuple[bool, str]:
+) -> tuple[bool, dict[str, Any] | str]:
     mt = _movement_type_by_code(db, movement_code)
     if mt is None:
         return False, f"movement_type_not_found:{movement_code}"
@@ -220,6 +321,12 @@ def _create_local_movement(
     db.commit()
     db.refresh(mv)
 
+    payload = {
+        "movement_id": int(mv.id),
+        "item_key": item_key,
+        "movement_code": movement_code,
+    }
+
     log.info(
         "RFID local movement created | movement_id=%s code=%s epc=%s item_key=%s local_user_id=%s mysim_user_id=%s",
         mv.id,
@@ -229,7 +336,70 @@ def _create_local_movement(
         local_user_id,
         mysim_user_id,
     )
-    return True, str(mv.id)
+    return True, payload
+
+
+def _sync_movement_to_mysim(
+    *,
+    movement_code: str,
+    item_key: str,
+    mysim_user_id: int,
+    current_route: AntennaRoute,
+    previous_route: AntennaRoute,
+    description: str,
+) -> dict[str, Any]:
+    """
+    Sube el movimiento a mySim usando el mismo patrón del CLI.
+    """
+    cfg, api = None, None
+    client, api = _mysim_client_and_adapter()
+    cfg = client.cfg
+
+    part_db_id = api.get_part_id_by_part_code(item_key)
+    if part_db_id is None:
+        raise ValueError(f"No se encontró partId={item_key} en mySim")
+
+    movement_type_id = _mysim_movement_type_id(movement_code)
+    movement_type_name = _mysim_movement_type_name(movement_code)
+
+    source_location = _mysim_location_for_route(previous_route)
+    destination_location = _mysim_location_for_route(current_route)
+
+    row: dict[str, Any] = {
+        "id": 0,
+        "entity": "Parts",
+        "idCol": int(part_db_id),
+        "movementType": movement_type_id,
+        "movementType.name": movement_type_name,
+        "quantity": 1,
+        "movementDescription": description,
+        "doneBy": int(mysim_user_id),
+        "sourceLocation": int(source_location),
+        "destinationLocation": int(destination_location),
+        "parentRecord": item_key,
+    }
+
+    resp = _post_movement_direct(cfg, row)
+
+    log.info(
+        "RFID mySim movement sent | part_db_id=%s item_key=%s movement_code=%s doneBy=%s source=%s destination=%s",
+        part_db_id,
+        item_key,
+        movement_code,
+        mysim_user_id,
+        source_location,
+        destination_location,
+    )
+
+    return {
+        "part_db_id": int(part_db_id),
+        "item_key": item_key,
+        "movement_type_id": movement_type_id,
+        "movement_type_name": movement_type_name,
+        "source_location": int(source_location),
+        "destination_location": int(destination_location),
+        "response": resp,
+    }
 
 
 @router.post("/ingest")
@@ -460,7 +630,7 @@ def rfid_ingest(payload: RFIDIngestIn, db: Session = Depends(get_db)):
     )
 
     try:
-        ok, movement_id_or_reason = _create_local_movement(
+        ok, local_result = _create_local_movement(
             db,
             movement_code=movement_code,
             epc=epc,
@@ -490,7 +660,7 @@ def rfid_ingest(payload: RFIDIngestIn, db: Session = Depends(get_db)):
     if not ok:
         return {
             "status": "ignored",
-            "reason": movement_id_or_reason,
+            "reason": str(local_result),
             "epc": epc,
             "antenna": payload.antenna,
             "logical_name": route.logical_name,
@@ -500,6 +670,31 @@ def rfid_ingest(payload: RFIDIngestIn, db: Session = Depends(get_db)):
             "user_id": local_user.id,
             "mysim_user_id": mysim_user_id,
         }
+
+    movement_id = int(local_result["movement_id"])
+    item_key = str(local_result["item_key"])
+
+    mysim_description = (
+        f"RFID {route_label} | epc={epc} | item_key={item_key} | "
+        f"door_id={route.door_id} | antenna={payload.antenna} | rssi={payload.rssi}"
+    )
+
+    try:
+        mysim_result = _sync_movement_to_mysim(
+            movement_code=movement_code,
+            item_key=item_key,
+            mysim_user_id=mysim_user_id,
+            current_route=route,
+            previous_route=prev_route,
+            description=mysim_description,
+        )
+        mysim_status = "ok"
+        mysim_reason = "movement_sent"
+    except Exception as e:
+        log.exception("RFID mySim sync failed | epc=%s item_key=%s", epc, item_key)
+        mysim_result = {"detail": str(e)}
+        mysim_status = "error"
+        mysim_reason = "movement_not_sent"
 
     return {
         "status": "ok",
@@ -513,7 +708,13 @@ def rfid_ingest(payload: RFIDIngestIn, db: Session = Depends(get_db)):
         "door_id": route.door_id,
         "route": route_label,
         "movement_code": movement_code,
-        "movement_id": int(movement_id_or_reason),
+        "movement_id": movement_id,
+        "item_key": item_key,
         "user_id": local_user.id,
         "mysim_user_id": mysim_user_id,
+        "mysim_sync": {
+            "status": mysim_status,
+            "reason": mysim_reason,
+            "result": mysim_result,
+        },
     }
