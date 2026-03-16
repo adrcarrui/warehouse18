@@ -1,89 +1,57 @@
-import asyncio
-import json
-from datetime import datetime, timezone
-from typing import Any, AsyncGenerator
+from __future__ import annotations
 
-from fastapi import APIRouter, Request, Body
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.orm import Session
+from typing import Optional
 
-router = APIRouter(prefix="/rfid", tags=["rfid"])
+from warehouse18.infrastructure.db.session import get_db
+from warehouse18.domain.models.rfid_event_log import RfidEventLog
 
-# Lista global de subscriptores (colas). MVP: vale.
-_subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
-_sub_lock = asyncio.Lock()
-
-KEEPALIVE_SECONDS = 15
+router = APIRouter(prefix="/rfid", tags=["RFID Events"])
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-async def publish_rfid_event(payload: dict[str, Any]) -> None:
+@router.get("/events/history")
+def get_rfid_event_history(
+    limit: int = Query(100, ge=1, le=1000),
+    door_id: Optional[str] = None,
+    epc: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
     """
-    Llama a esto desde tu código RFID cuando tengas un evento que quieres ver en la UI.
+    Devuelve histórico de eventos RFID persistidos en rfid_event_log
     """
-    payload = dict(payload)
-    payload.setdefault("ts", _now_iso())
 
-    async with _sub_lock:
-        dead: list[asyncio.Queue] = []
-        for q in _subscribers:
-            try:
-                q.put_nowait(payload)
-            except asyncio.QueueFull:
-                # Si un cliente no consume, lo dejamos caer (MVP).
-                pass
-            except Exception:
-                dead.append(q)
-        for q in dead:
-            _subscribers.discard(q)
+    q = db.query(RfidEventLog)
 
+    if door_id:
+        q = q.filter(RfidEventLog.door_id == door_id)
 
-def _sse(data: dict[str, Any], event: str | None = None) -> bytes:
-    """
-    Serializa como SSE. (data: <json>\n\n)
-    """
-    body = ""
-    if event:
-        body += f"event: {event}\n"
-    body += "data: " + json.dumps(data, ensure_ascii=False) + "\n\n"
-    return body.encode("utf-8")
+    if epc:
+        q = q.filter(RfidEventLog.epc == epc)
 
+    rows = (
+        q.order_by(RfidEventLog.created_at.desc())
+        .limit(limit)
+        .all()
+    )
 
-@router.get("/events")
-async def rfid_events(request: Request):
-    """
-    SSE stream: /api/rfid/events
-    """
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=200)
-
-    async with _sub_lock:
-        _subscribers.add(q)
-
-    async def gen() -> AsyncGenerator[bytes, None]:
-        try:
-            # Mensaje inicial (útil para confirmar conexión)
-            yield _sse({"ts": _now_iso(), "type": "hello"})
-
-            while True:
-                if await request.is_disconnected():
-                    break
-
-                try:
-                    msg = await asyncio.wait_for(q.get(), timeout=KEEPALIVE_SECONDS)
-                    # puedes usar event=msg.get("type") si quieres separar por tipo
-                    yield _sse(msg)
-                except asyncio.TimeoutError:
-                    # keep-alive para que no se cierre por inactividad
-                    yield b": keep-alive\n\n"
-        finally:
-            async with _sub_lock:
-                _subscribers.discard(q)
-
-    return StreamingResponse(gen(), media_type="text/event-stream")
-
-@router.post("/emit")
-async def emit_test(payload: dict = Body(...)):
-    await publish_rfid_event(payload)
-    return {"status": "ok"}
+    return [
+        {
+            "id": r.id,
+            "event_type": r.event_type,
+            "reason": r.reason,
+            "epc": r.epc,
+            "reader_id": r.reader_id,
+            "antenna": r.antenna,
+            "door_id": r.door_id,
+            "zone_id": r.zone_id,
+            "zone_role": r.zone_role,
+            "movement_code": r.movement_code,
+            "movement_id": r.movement_id,
+            "user_id": r.user_id,
+            "mysim_user_id": r.mysim_user_id,
+            "payload": r.payload_json,
+            "created_at": r.created_at,
+        }
+        for r in rows
+    ]

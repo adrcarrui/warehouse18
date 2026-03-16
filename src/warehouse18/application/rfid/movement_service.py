@@ -11,6 +11,7 @@ import requests
 from sqlalchemy.orm import Session
 
 from warehouse18.application.rfid.epc96 import EPCSchema, load_epc_schema, parse_epc96
+from warehouse18.application.rfid.event_log_service import log_rfid_event
 from warehouse18.domain.models.movement import Movement
 from warehouse18.domain.models.movement_type import MovementType as LocalMovementType
 from warehouse18.domain.models.user import User
@@ -321,6 +322,28 @@ def finalize_movement_for_user(
     movement_id = int(local_result["movement_id"])
     item_key = str(local_result["item_key"])
 
+    log_rfid_event(
+        db,
+        event_type="movement_created",
+        reason="movement_created",
+        epc=epc,
+        reader_id=reader_id,
+        antenna=antenna,
+        door_id=current_route.door_id,
+        zone_id=current_route.zone_id,
+        zone_role=current_route.zone_role,
+        movement_code=movement_code,
+        movement_id=movement_id,
+        user_id=local_user.id,
+        mysim_user_id=mysim_user_id,
+        payload_json={
+            "route": route_label,
+            "item_key": item_key,
+            "from_location_id": previous_route.location_id,
+            "to_location_id": current_route.location_id,
+        },
+    )
+
     mysim_description = (
         f"RFID {route_label} | epc={epc} | item_key={item_key} | "
         f"door_id={current_route.door_id} | reader_id={reader_id} | antenna={antenna} | rssi={rssi}"
@@ -337,11 +360,54 @@ def finalize_movement_for_user(
         )
         mysim_status = "ok"
         mysim_reason = "movement_sent"
+
+        log_rfid_event(
+            db,
+            event_type="movement_sync_ok",
+            reason="movement_sent",
+            epc=epc,
+            reader_id=reader_id,
+            antenna=antenna,
+            door_id=current_route.door_id,
+            zone_id=current_route.zone_id,
+            zone_role=current_route.zone_role,
+            movement_code=movement_code,
+            movement_id=movement_id,
+            user_id=local_user.id,
+            mysim_user_id=mysim_user_id,
+            payload_json={
+                "route": route_label,
+                "item_key": item_key,
+                "mysim_result": mysim_result,
+            },
+        )
+
     except Exception as e:
         log.exception("RFID mySim sync failed | epc=%s item_key=%s", epc, item_key)
         mysim_result = {"detail": str(e)}
         mysim_status = "error"
         mysim_reason = "movement_not_sent"
+
+        log_rfid_event(
+            db,
+            event_type="movement_sync_error",
+            reason="movement_not_sent",
+            epc=epc,
+            reader_id=reader_id,
+            antenna=antenna,
+            door_id=current_route.door_id,
+            zone_id=current_route.zone_id,
+            zone_role=current_route.zone_role,
+            movement_code=movement_code,
+            movement_id=movement_id,
+            user_id=local_user.id,
+            mysim_user_id=mysim_user_id,
+            payload_json={
+                "route": route_label,
+                "item_key": item_key,
+                "detail": str(e),
+            },
+        )
 
     return {
         "status": "ok",

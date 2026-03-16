@@ -10,6 +10,7 @@ from typing import Any, Optional
 from sqlalchemy.orm import Session
 
 from warehouse18.application.rfid.epc96 import EPCSchema, load_epc_schema, parse_epc96
+from warehouse18.application.rfid.event_log_service import log_rfid_event
 from warehouse18.application.rfid.movement_service import finalize_movement_for_user
 from warehouse18.domain.models.app_setting import AppSetting
 from warehouse18.infrastructure.config.antenna_map import (
@@ -63,6 +64,7 @@ _last_seen_reader_event: dict[tuple[str, int, str], float] = {}
 _epc_state_by_door: dict[tuple[str, str], DoorState] = {}
 _pending_cross_by_door_epc: dict[tuple[str, str], PendingUserCross] = {}
 
+
 def _reload_runtime_config() -> None:
     global USER_PRESENCE_TTL_S
     global USER_BIND_TTL_S
@@ -90,6 +92,7 @@ def _reload_runtime_config() -> None:
         PENDING_USER_WINDOW_S,
         MIN_SEEN_COUNT_TO_CONFIRM,
     )
+
 
 def _get_schema() -> EPCSchema:
     global _epc_schema
@@ -257,6 +260,24 @@ def _try_resolve_pending_crosses_for_user(
 
     _pending_cross_by_door_epc.pop(key, None)
 
+    log_rfid_event(
+        db,
+        event_type="pending_resolved",
+        reason="late_user_resolution",
+        epc=pending.epc,
+        reader_id=pending.reader_id,
+        antenna=pending.antenna,
+        door_id=door_id,
+        zone_id=pending.current_route.zone_id,
+        zone_role=pending.current_route.zone_role,
+        movement_code=pending.movement_code,
+        mysim_user_id=mysim_user_id,
+        payload_json={
+            "route": pending.route_label,
+            "lag_seconds": round(now_ts - pending.created_at, 3),
+        },
+    )
+
     return finalize_movement_for_user(
         db=db,
         epc=pending.epc,
@@ -273,10 +294,12 @@ def _try_resolve_pending_crosses_for_user(
 
 
 def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
+    _reload_runtime_config()
+
     now_ts = time.time()
     epc = event.epc.strip().upper()
     reader_id = event.reader_id.strip() or "reader-1"
-    _reload_runtime_config()
+
     _cleanup_user_bindings(now_ts)
     _cleanup_reader_dedupe(now_ts)
     _cleanup_epc_states(now_ts)
@@ -284,6 +307,14 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
 
     route = _resolve_route(reader_id, event.antenna)
     if route is None:
+        log_rfid_event(
+            db,
+            event_type="unknown_reader_or_antenna",
+            reason="unknown_reader_or_antenna",
+            epc=epc,
+            reader_id=reader_id,
+            antenna=event.antenna,
+        )
         return {
             "status": "ignored",
             "reason": "unknown_reader_or_antenna",
@@ -293,6 +324,17 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
         }
 
     if not route.enabled:
+        log_rfid_event(
+            db,
+            event_type="route_disabled",
+            reason="route_disabled",
+            epc=epc,
+            reader_id=reader_id,
+            antenna=event.antenna,
+            door_id=route.door_id,
+            zone_id=route.zone_id,
+            zone_role=route.zone_role,
+        )
         return {
             "status": "ignored",
             "reason": "route_disabled",
@@ -313,6 +355,18 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
             event.antenna,
             e,
         )
+        log_rfid_event(
+            db,
+            event_type="epc_rejected",
+            reason="invalid_epc",
+            epc=epc,
+            reader_id=reader_id,
+            antenna=event.antenna,
+            door_id=route.door_id,
+            zone_id=route.zone_id,
+            zone_role=route.zone_role,
+            payload_json={"detail": str(e)},
+        )
         return {
             "status": "ignored",
             "reason": "invalid_epc",
@@ -329,6 +383,18 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
             and int(existing["user_id"]) == serial_num
             and (now_ts - float(existing["ts"])) < USER_COOLDOWN_S
         ):
+            log_rfid_event(
+                db,
+                event_type="user_cooldown",
+                reason="user_cooldown",
+                epc=epc,
+                reader_id=reader_id,
+                antenna=event.antenna,
+                door_id=route.door_id,
+                zone_id=route.zone_id,
+                zone_role=route.zone_role,
+                mysim_user_id=serial_num,
+            )
             return {
                 "status": "ignored",
                 "reason": "user_cooldown",
@@ -360,6 +426,25 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
             resolved["user_bind_reason"] = "late_user_resolution"
             return resolved
 
+        log_rfid_event(
+            db,
+            event_type="user_seen",
+            reason="user_seen",
+            epc=epc,
+            reader_id=reader_id,
+            antenna=event.antenna,
+            door_id=route.door_id,
+            zone_id=route.zone_id,
+            zone_role=route.zone_role,
+            mysim_user_id=serial_num,
+            payload_json={
+                "logical_name": route.logical_name,
+                "location_id": route.location_id,
+                "presence_ttl_seconds": USER_PRESENCE_TTL_S,
+                "bind_ttl_seconds": USER_BIND_TTL_S,
+            },
+        )
+
         return {
             "status": "ok",
             "reason": "user_seen",
@@ -380,6 +465,17 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
     dedupe_key = (reader_id, event.antenna, epc)
     last_seen = _last_seen_reader_event.get(dedupe_key)
     if last_seen is not None and (now_ts - last_seen) < READER_DEDUPE_S:
+        log_rfid_event(
+            db,
+            event_type="duplicate_reader_event",
+            reason="duplicate_reader_event",
+            epc=epc,
+            reader_id=reader_id,
+            antenna=event.antenna,
+            door_id=route.door_id,
+            zone_id=route.zone_id,
+            zone_role=route.zone_role,
+        )
         return {
             "status": "ignored",
             "reason": "duplicate_reader_event",
@@ -394,6 +490,17 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
     _last_seen_reader_event[dedupe_key] = now_ts
 
     if route.zone_role not in {"A", "B"}:
+        log_rfid_event(
+            db,
+            event_type="non_passage_zone",
+            reason="non_passage_zone",
+            epc=epc,
+            reader_id=reader_id,
+            antenna=event.antenna,
+            door_id=route.door_id,
+            zone_id=route.zone_id,
+            zone_role=route.zone_role,
+        )
         return {
             "status": "ignored",
             "reason": "non_passage_zone",
@@ -409,9 +516,34 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
     state = _epc_state_by_door.get(state_key)
 
     if state is None:
-        return _start_or_refresh_state(route.door_id, epc, now_ts, route)
+        result = _start_or_refresh_state(route.door_id, epc, now_ts, route)
+        log_rfid_event(
+            db,
+            event_type="cross_started",
+            reason="awaiting_cross",
+            epc=epc,
+            reader_id=reader_id,
+            antenna=event.antenna,
+            door_id=route.door_id,
+            zone_id=route.zone_id,
+            zone_role=route.zone_role,
+            payload_json=result,
+        )
+        return result
 
     if now_ts < state.cooldown_until:
+        log_rfid_event(
+            db,
+            event_type="movement_cooldown",
+            reason="movement_cooldown",
+            epc=epc,
+            reader_id=reader_id,
+            antenna=event.antenna,
+            door_id=route.door_id,
+            zone_id=route.zone_id,
+            zone_role=route.zone_role,
+            payload_json={"cooldown_remaining": round(state.cooldown_until - now_ts, 3)},
+        )
         return {
             "status": "ignored",
             "reason": "movement_cooldown",
@@ -435,7 +567,37 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
             delta_s,
             CROSS_WINDOW_S,
         )
-        return _start_or_refresh_state(route.door_id, epc, now_ts, route)
+        log_rfid_event(
+            db,
+            event_type="cross_expired",
+            reason="cross_expired",
+            epc=epc,
+            reader_id=reader_id,
+            antenna=event.antenna,
+            door_id=route.door_id,
+            zone_id=route.zone_id,
+            zone_role=route.zone_role,
+            payload_json={
+                "prev_role": state.route.zone_role,
+                "current_role": route.zone_role,
+                "delta_seconds": round(delta_s, 3),
+                "window_seconds": CROSS_WINDOW_S,
+            },
+        )
+        result = _start_or_refresh_state(route.door_id, epc, now_ts, route)
+        log_rfid_event(
+            db,
+            event_type="cross_started",
+            reason="awaiting_cross",
+            epc=epc,
+            reader_id=reader_id,
+            antenna=event.antenna,
+            door_id=route.door_id,
+            zone_id=route.zone_id,
+            zone_role=route.zone_role,
+            payload_json=result,
+        )
+        return result
 
     if state.route.zone_role == route.zone_role:
         state.ts = now_ts
@@ -448,6 +610,19 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
             epc,
             route.zone_role,
             state.seen_count_same_side,
+        )
+
+        log_rfid_event(
+            db,
+            event_type="bounce_same_side",
+            reason="bounce_same_side",
+            epc=epc,
+            reader_id=reader_id,
+            antenna=event.antenna,
+            door_id=route.door_id,
+            zone_id=route.zone_id,
+            zone_role=route.zone_role,
+            payload_json={"seen_count_same_side": state.seen_count_same_side},
         )
 
         return {
@@ -470,7 +645,20 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
         movement_code = os.getenv("WAREHOUSE18_RFID_MOVEMENT_B_TO_A", "GR").strip().upper()
         route_label = "B->A"
     else:
-        return _start_or_refresh_state(route.door_id, epc, now_ts, route)
+        result = _start_or_refresh_state(route.door_id, epc, now_ts, route)
+        log_rfid_event(
+            db,
+            event_type="cross_started",
+            reason="awaiting_cross",
+            epc=epc,
+            reader_id=reader_id,
+            antenna=event.antenna,
+            door_id=route.door_id,
+            zone_id=route.zone_id,
+            zone_role=route.zone_role,
+            payload_json=result,
+        )
+        return result
 
     if state.seen_count_same_side < MIN_SEEN_COUNT_TO_CONFIRM:
         log.info(
@@ -481,7 +669,39 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
             state.seen_count_same_side,
             MIN_SEEN_COUNT_TO_CONFIRM,
         )
-        return _start_or_refresh_state(route.door_id, epc, now_ts, route)
+        log_rfid_event(
+            db,
+            event_type="cross_rejected_weak_evidence",
+            reason="cross_rejected_weak_evidence",
+            epc=epc,
+            reader_id=reader_id,
+            antenna=event.antenna,
+            door_id=route.door_id,
+            zone_id=route.zone_id,
+            zone_role=route.zone_role,
+            movement_code=movement_code,
+            payload_json={
+                "route": route_label,
+                "seen_count_same_side": state.seen_count_same_side,
+                "min_required": MIN_SEEN_COUNT_TO_CONFIRM,
+            },
+        )
+        result = _start_or_refresh_state(route.door_id, epc, now_ts, route)
+        log_rfid_event(
+            db,
+            event_type="cross_started",
+            reason="awaiting_cross",
+            epc=epc,
+            reader_id=reader_id,
+            antenna=event.antenna,
+            door_id=route.door_id,
+            zone_id=route.zone_id,
+            zone_role=route.zone_role,
+            payload_json=result,
+        )
+        return result
+
+    prev_zone_id = state.route.zone_id
 
     log.info(
         "RFID cross accepted | door_id=%s epc=%s reader_id=%s route=%s movement_code=%s prev_zone=%s current_zone=%s",
@@ -490,8 +710,26 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
         reader_id,
         route_label,
         movement_code,
-        state.route.zone_id,
+        prev_zone_id,
         route.zone_id,
+    )
+
+    log_rfid_event(
+        db,
+        event_type="cross_accepted",
+        reason="cross_accepted",
+        epc=epc,
+        reader_id=reader_id,
+        antenna=event.antenna,
+        door_id=route.door_id,
+        zone_id=route.zone_id,
+        zone_role=route.zone_role,
+        movement_code=movement_code,
+        payload_json={
+            "route": route_label,
+            "prev_zone": prev_zone_id,
+            "current_zone": route.zone_id,
+        },
     )
 
     previous_route = state.route
@@ -524,6 +762,23 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
             PENDING_USER_WINDOW_S,
         )
 
+        log_rfid_event(
+            db,
+            event_type="pending_user_resolution",
+            reason="pending_user_resolution",
+            epc=epc,
+            reader_id=reader_id,
+            antenna=event.antenna,
+            door_id=route.door_id,
+            zone_id=route.zone_id,
+            zone_role=route.zone_role,
+            movement_code=movement_code,
+            payload_json={
+                "route": route_label,
+                "pending_user_window_seconds": PENDING_USER_WINDOW_S,
+            },
+        )
+
         return {
             "status": "ok",
             "reason": "pending_user_resolution",
@@ -543,6 +798,20 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
         }
 
     if not _rfid_create_movements_enabled(db):
+        log_rfid_event(
+            db,
+            event_type="movement_creation_disabled",
+            reason="movement_creation_disabled",
+            epc=epc,
+            reader_id=reader_id,
+            antenna=event.antenna,
+            door_id=route.door_id,
+            zone_id=route.zone_id,
+            zone_role=route.zone_role,
+            movement_code=movement_code,
+            mysim_user_id=mysim_user_id,
+            payload_json={"route": route_label},
+        )
         return {
             "status": "ok",
             "reason": "movement_creation_disabled",
