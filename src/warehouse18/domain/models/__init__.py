@@ -9,6 +9,6 @@ from .inventory_stock import InventoryStock
 from .movement_type import  MovementType
 from .movement import Movement
 from .app_setting import AppSetting
-from .rfid_Event_log import RfidEventLog
+from .rfid_event_log import RfidEventLog
 
-__all__ = ["Base", "User", "Location", "Item","Asset","AssetLocation", "StockContainer", "InventoryStock", "MovementType", "Movement", "AppSetting", "RFIDEventLog"]
+__all__ = ["Base", "User", "Location", "Item","Asset","AssetLocation", "StockContainer", "InventoryStock", "MovementType", "Movement", "AppSetting", "RfidEventLog"]

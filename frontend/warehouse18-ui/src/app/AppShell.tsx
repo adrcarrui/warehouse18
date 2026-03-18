@@ -27,6 +27,7 @@ const NAV: NavItem[] = [
   { label: "Users", href: "/users", icon: Users },
   { label: "RFID Monitor", href: "/rfid-monitor", icon: Radio },
   { label: "Settings", href: "/settings", icon: Settings },
+  { label: "RFID Review", href: "/rfid-review", icon: Radio },
 ];
 
 const STORAGE_KEY = "warehouse18.sidebarCollapsed";

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, BigInteger, Text, DateTime, Numeric, ForeignKey, func
+from sqlalchemy import Column, BigInteger, Text, DateTime, Numeric, ForeignKey, String, func
 from .base import Base
 
 class Movement(Base):
@@ -24,3 +24,12 @@ class Movement(Base):
 
     item_key = Column(Text, nullable=True)  # denormalized for easier querying
     mysim_user_id = Column(BigInteger, nullable=True, index=True)  # denormalized for easier querying
+
+    review_status = Column(String(20), nullable=False, default="pending")
+    review_note = Column(Text, nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    reviewed_by_user_id = Column(BigInteger, nullable=True)
+
+    mysim_sync_status = Column(String(20), nullable=False, default="not_sent")
+    mysim_synced_at = Column(DateTime(timezone=True), nullable=True)
+    mysim_sync_error = Column(Text, nullable=True)

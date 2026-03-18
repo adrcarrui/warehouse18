@@ -8,6 +8,7 @@ import StockContainersPage from "./pages/StockContainersPage";
 import MovementsPage from "./pages/Movements/MovementsPage";
 import RFIDMonitorPage from "./pages/RFIDMonitorPage";
 import DashboardPage from "./pages/Dashboard";
+import RFIDReviewPage from "./pages/RFIDReview";
 import "./index.css"
 
 
@@ -23,6 +24,7 @@ function Home() {
         <li><Link to="/movements">Movements</Link></li>
         <li><Link to="/rfid-monitor">RFIDMonitor</Link></li>
         <li><Link to="/dashboard">Dashboard</Link></li>
+        <li><Link to="/rfid-review">RFIDReview</Link></li>
       </ul>
     </div>
   );
@@ -40,6 +42,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         <Route path="/stock-containers" element={<StockContainersPage />} />
         <Route path="/movements" element={<MovementsPage />} />
         <Route path="/rfid-monitor" element={<RFIDMonitorPage />} />
+        <Route path="/rfid-review" element={<RFIDReviewPage/>}/>
       </Routes>
     </BrowserRouter>
   //</React.StrictMode>

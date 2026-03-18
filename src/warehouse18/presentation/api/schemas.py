@@ -251,6 +251,14 @@ class MovementOut(ORMBase):
 
     item_key: Optional[str] = None  # denormalized for easier querying
 
+    review_status: str
+    reviewed_at: Optional[datetime] = None
+    reviewed_by_user_id: Optional[int] = None
+    review_note: Optional[str] = None
+    mysim_sync_status: str
+    mysim_synced_at: Optional[datetime] = None
+    mysim_sync_error: Optional[str] = None
+
 T = TypeVar("T")
 
 class PageOut(BaseModel, Generic[T]):
@@ -277,3 +285,26 @@ class MovementToUpload:
     location_to: str | None
     timestamp: datetime
     rfid_event_id: str
+
+class MovementReviewIn(BaseModel):
+    reviewed_by_user_id: int
+    note: Optional[str] = None
+
+
+class MovementReviewOut(BaseModel):
+    ok: bool = True
+    movement_id: int
+    review_status: str
+    reviewed_at: datetime
+    reviewed_by_user_id: int
+    mysim_sync_status: str
+    mysim_sync_error: Optional[str] = None
+
+
+class RFIDEventReviewIn(BaseModel):
+    reviewed_by_user_id: int
+    note: Optional[str] = None
+
+class MovementLocationsUpdateIn(BaseModel):
+    from_location_id: Optional[int] = None
+    to_location_id: Optional[int] = None

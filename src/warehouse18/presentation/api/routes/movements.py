@@ -1,19 +1,30 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy import or_, select
-from datetime import datetime
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
+from warehouse18.application.rfid.event_log_service import log_rfid_event
+from warehouse18.application.rfid.movement_service import sync_pending_reviewed_movement
+from warehouse18.domain.models import Item, Location, Movement, MovementType, User
+from warehouse18.domain.models.rfid_event_log import RfidEventLog
 from warehouse18.infrastructure.db import get_db
-from warehouse18.domain.models import Movement, MovementType, Item, Location, User
-from warehouse18.presentation.api.schemas import MovementCreateIn, MovementOut, PageOut
-
+from warehouse18.presentation.api.pagination_headers import set_pagination_headers
 from warehouse18.presentation.api.paging import paginate
-from warehouse18.presentation.api.pagination_headers import set_pagination_headers 
+from warehouse18.presentation.api.schemas import (
+    MovementCreateIn,
+    MovementOut,
+    MovementReviewIn,
+    MovementReviewOut,
+    MovementLocationsUpdateIn,
+    PageOut,
+)
 
 router = APIRouter(prefix="/movements", tags=["movements"])
 
 VALID_REF_TYPES = {"asset", "container"}
+
 
 @router.post("/", response_model=MovementOut)
 def create_movement(body: MovementCreateIn, db: Session = Depends(get_db)):
@@ -21,7 +32,6 @@ def create_movement(body: MovementCreateIn, db: Session = Depends(get_db)):
     if not mt:
         raise HTTPException(status_code=409, detail="movement_type not found")
 
-    # Validación mínima coherente con tus flags
     if mt.affects_stock:
         if body.item_id is None:
             raise HTTPException(status_code=409, detail="item_id is required for stock-affecting movement")
@@ -33,7 +43,6 @@ def create_movement(body: MovementCreateIn, db: Session = Depends(get_db)):
             raise HTTPException(status_code=409, detail="Item not found")
 
     if mt.affects_location:
-        # Para movimientos de ubicación normalmente necesitas al menos un lado
         if body.from_location_id is None and body.to_location_id is None:
             raise HTTPException(status_code=409, detail="from_location_id or to_location_id is required for location-affecting movement")
 
@@ -44,14 +53,12 @@ def create_movement(body: MovementCreateIn, db: Session = Depends(get_db)):
             if not db.query(Location).filter(Location.id == body.to_location_id).first():
                 raise HTTPException(status_code=409, detail="to_location not found")
 
-    # reference pair: ambos o ninguno (tu CHECK lo exige)
     if (body.reference_type is None) != (body.reference_id is None):
         raise HTTPException(status_code=409, detail="reference_type and reference_id must be provided together")
 
     if body.reference_type is not None and body.reference_type not in VALID_REF_TYPES:
         raise HTTPException(status_code=409, detail="Invalid reference_type")
 
-    # user opcional, pero si viene, valida
     if body.user_id is not None:
         if not db.query(User).filter(User.id == body.user_id).first():
             raise HTTPException(status_code=409, detail="User not found")
@@ -64,7 +71,6 @@ def create_movement(body: MovementCreateIn, db: Session = Depends(get_db)):
         return mv
     except IntegrityError as e:
         db.rollback()
-        # tu regla: todo 409
         raise HTTPException(status_code=409, detail=str(e.orig))
 
 
@@ -73,20 +79,18 @@ def list_movements(
     request: Request,
     response: Response,
     db: Session = Depends(get_db),
-    # búsqueda
     q: str | None = Query(None, max_length=200),
-    # filtros existentes
     movement_type_id: int | None = None,
     item_id: int | None = None,
     from_location_id: int | None = None,
     to_location_id: int | None = None,
     user_id: int | None = None,
-    # filtros extra útiles
+    review_status: str | None = None,
+    mysim_sync_status: str | None = None,
     reference_type: str | None = Query(None, max_length=50),
     reference_id: int | None = None,
     from_date: datetime | None = None,
     to_date: datetime | None = None,
-    # paginación
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
 ):
@@ -102,13 +106,14 @@ def list_movements(
         stmt = stmt.where(Movement.to_location_id == to_location_id)
     if user_id is not None:
         stmt = stmt.where(Movement.user_id == user_id)
-
+    if review_status is not None:
+        stmt = stmt.where(Movement.review_status == review_status)
+    if mysim_sync_status is not None:
+        stmt = stmt.where(Movement.mysim_sync_status == mysim_sync_status)
     if reference_type is not None:
         stmt = stmt.where(Movement.reference_type == reference_type)
     if reference_id is not None:
         stmt = stmt.where(Movement.reference_id == reference_id)
-
-    # rango de fechas
     if from_date is not None:
         stmt = stmt.where(Movement.created_at >= from_date)
     if to_date is not None:
@@ -120,15 +125,14 @@ def list_movements(
             or_(
                 Movement.notes.ilike(like),
                 Movement.reference_type.ilike(like),
+                Movement.item_key.ilike(like),
             )
         )
 
-    # Orden estable para paginación
     stmt = stmt.order_by(Movement.created_at.desc())
 
     items, total, pages = paginate(db, stmt, page=page, page_size=page_size)
 
-    # Headers útiles de paginación
     set_pagination_headers(
         request=request,
         response=response,
@@ -146,9 +150,219 @@ def list_movements(
         pages=pages,
     )
 
+
 @router.get("/{movement_id}", response_model=MovementOut)
 def get_movement(movement_id: int, db: Session = Depends(get_db)):
     mv = db.query(Movement).filter(Movement.id == movement_id).first()
     if not mv:
         raise HTTPException(status_code=409, detail="Movement not found")
     return mv
+
+
+@router.post("/{movement_id}/confirm", response_model=MovementReviewOut)
+def confirm_movement_review(
+    movement_id: int,
+    body: MovementReviewIn,
+    db: Session = Depends(get_db),
+):
+    reviewer = db.query(User).filter(User.id == body.reviewed_by_user_id).first()
+    if not reviewer:
+        raise HTTPException(status_code=404, detail="Reviewer user not found")
+
+    movement = db.query(Movement).filter(Movement.id == movement_id).first()
+    if not movement:
+        raise HTTPException(status_code=404, detail="Movement not found")
+
+    movement.review_status = "confirmed"
+    movement.reviewed_at = datetime.now(timezone.utc)
+    movement.reviewed_by_user_id = body.reviewed_by_user_id
+    movement.review_note = body.note
+    db.add(movement)
+    db.commit()
+    db.refresh(movement)
+
+    db.query(RfidEventLog).filter(RfidEventLog.movement_id == movement_id).update(
+        {
+            RfidEventLog.review_status: "confirmed",
+            RfidEventLog.reviewed_at: movement.reviewed_at,
+            RfidEventLog.reviewed_by_user_id: body.reviewed_by_user_id,
+            RfidEventLog.review_note: body.note,
+        },
+        synchronize_session=False,
+    )
+    db.commit()
+
+    movement_event = (
+        db.query(RfidEventLog)
+        .filter(
+            RfidEventLog.movement_id == movement_id,
+            RfidEventLog.event_type == "movement_created",
+        )
+        .order_by(RfidEventLog.created_at.desc())
+        .first()
+    )
+    if not movement_event:
+        raise HTTPException(status_code=409, detail="movement_created RFID event not found")
+
+    try:
+        sync_pending_reviewed_movement(
+            db,
+            movement=movement,
+            movement_event=movement_event,
+        )
+    except Exception as e:
+        movement.mysim_sync_status = "error"
+        movement.mysim_sync_error = str(e)
+        db.add(movement)
+        db.commit()
+
+        log_rfid_event(
+            db,
+            event_type="movement_sync_error",
+            reason="movement_not_sent",
+            epc=movement_event.epc,
+            reader_id=movement_event.reader_id,
+            antenna=movement_event.antenna,
+            door_id=movement_event.door_id,
+            zone_id=movement_event.zone_id,
+            zone_role=movement_event.zone_role,
+            movement_code=movement_event.movement_code,
+            movement_id=movement.id,
+            user_id=movement.user_id,
+            mysim_user_id=movement.mysim_user_id,
+            payload_json={"detail": str(e)},
+            review_status="confirmed",
+        )
+
+    db.refresh(movement)
+
+    return MovementReviewOut(
+        movement_id=movement.id,
+        review_status=movement.review_status,
+        reviewed_at=movement.reviewed_at,
+        reviewed_by_user_id=movement.reviewed_by_user_id,
+        mysim_sync_status=movement.mysim_sync_status,
+        mysim_sync_error=movement.mysim_sync_error,
+    )
+
+
+@router.post("/{movement_id}/reject", response_model=MovementReviewOut)
+def reject_movement_review(
+    movement_id: int,
+    body: MovementReviewIn,
+    db: Session = Depends(get_db),
+):
+    reviewer = db.query(User).filter(User.id == body.reviewed_by_user_id).first()
+    if not reviewer:
+        raise HTTPException(status_code=404, detail="Reviewer user not found")
+
+    movement = db.query(Movement).filter(Movement.id == movement_id).first()
+    if not movement:
+        raise HTTPException(status_code=404, detail="Movement not found")
+
+    movement.review_status = "rejected"
+    movement.reviewed_at = datetime.now(timezone.utc)
+    movement.reviewed_by_user_id = body.reviewed_by_user_id
+    movement.review_note = body.note
+    movement.mysim_sync_status = "skipped"
+    movement.mysim_sync_error = None
+
+    db.add(movement)
+    db.commit()
+    db.refresh(movement)
+
+    db.query(RfidEventLog).filter(RfidEventLog.movement_id == movement_id).update(
+        {
+            RfidEventLog.review_status: "rejected",
+            RfidEventLog.reviewed_at: movement.reviewed_at,
+            RfidEventLog.reviewed_by_user_id: body.reviewed_by_user_id,
+            RfidEventLog.review_note: body.note,
+        },
+        synchronize_session=False,
+    )
+    db.commit()
+
+    return MovementReviewOut(
+        movement_id=movement.id,
+        review_status=movement.review_status,
+        reviewed_at=movement.reviewed_at,
+        reviewed_by_user_id=movement.reviewed_by_user_id,
+        mysim_sync_status=movement.mysim_sync_status,
+        mysim_sync_error=movement.mysim_sync_error,
+    )
+
+@router.patch("/{movement_id}/locations", response_model=MovementOut)
+def update_movement_locations(
+    movement_id: int,
+    body: MovementLocationsUpdateIn,
+    db: Session = Depends(get_db),
+):
+    movement = db.query(Movement).filter(Movement.id == movement_id).first()
+    if not movement:
+        raise HTTPException(status_code=404, detail="Movement not found")
+
+    if movement.review_status != "pending":
+        raise HTTPException(
+            status_code=409,
+            detail="Only pending movements can be edited",
+        )
+
+    if body.from_location_id is not None:
+        from_loc = db.query(Location).filter(Location.id == body.from_location_id).first()
+        if not from_loc:
+            raise HTTPException(status_code=404, detail="from_location not found")
+        if not from_loc.is_active:
+            raise HTTPException(status_code=409, detail="from_location is inactive")
+        movement.from_location_id = body.from_location_id
+
+    if body.to_location_id is not None:
+        to_loc = db.query(Location).filter(Location.id == body.to_location_id).first()
+        if not to_loc:
+            raise HTTPException(status_code=404, detail="to_location not found")
+        if not to_loc.is_active:
+            raise HTTPException(status_code=409, detail="to_location is inactive")
+        movement.to_location_id = body.to_location_id
+
+    db.add(movement)
+
+    movement_event = (
+        db.query(RfidEventLog)
+        .filter(
+            RfidEventLog.movement_id == movement_id,
+            RfidEventLog.event_type == "movement_created",
+        )
+        .order_by(RfidEventLog.created_at.desc())
+        .first()
+    )
+
+    if movement_event:
+        payload = dict(movement_event.payload_json or {})
+
+        if body.from_location_id is not None:
+            payload["from_location_id"] = body.from_location_id
+
+        if body.to_location_id is not None:
+            payload["to_location_id"] = body.to_location_id
+
+        sync_payload = dict(payload.get("mysim_sync_payload") or {})
+        row = dict(sync_payload.get("row") or {})
+
+        if body.from_location_id is not None:
+            sync_payload["source_location"] = body.from_location_id
+            row["sourceLocation"] = body.from_location_id
+
+        if body.to_location_id is not None:
+            sync_payload["destination_location"] = body.to_location_id
+            row["destinationLocation"] = body.to_location_id
+
+        if row:
+            sync_payload["row"] = row
+            payload["mysim_sync_payload"] = sync_payload
+
+        movement_event.payload_json = payload
+        db.add(movement_event)
+
+    db.commit()
+    db.refresh(movement)
+
+    return movement

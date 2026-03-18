@@ -166,24 +166,45 @@ def _cleanup_epc_states(now_ts: float) -> None:
         _epc_state_by_door.pop(key, None)
 
 
-def _cleanup_pending_crosses(now_ts: float) -> None:
+def _cleanup_pending_crosses(db: Session, now_ts: float) -> None:
     expired = [
         key
         for key, pending in _pending_cross_by_door_epc.items()
         if now_ts > pending.expires_at
     ]
+
     for key in expired:
         pending = _pending_cross_by_door_epc.pop(key, None)
-        if pending is not None:
-            log.info(
-                "RFID pending cross expired | door_id=%s epc=%s route=%s age=%.3f window=%.3f",
-                pending.current_route.door_id,
-                pending.epc,
-                pending.route_label,
-                now_ts - pending.created_at,
-                PENDING_USER_WINDOW_S,
-            )
+        if pending is None:
+            continue
 
+        log.info(
+            "RFID pending cross expired | door_id=%s epc=%s route=%s age=%.3f window=%.3f",
+            pending.current_route.door_id,
+            pending.epc,
+            pending.route_label,
+            now_ts - pending.created_at,
+            PENDING_USER_WINDOW_S,
+        )
+
+        log_rfid_event(
+            db,
+            event_type="pending_user_resolution_expired",
+            reason="pending_user_resolution_expired",
+            epc=pending.epc,
+            reader_id=pending.reader_id,
+            antenna=pending.antenna,
+            door_id=pending.current_route.door_id,
+            zone_id=pending.current_route.zone_id,
+            zone_role=pending.current_route.zone_role,
+            movement_code=pending.movement_code,
+            review_status="pending",
+            payload_json={
+                "route": pending.route_label,
+                "age_seconds": round(now_ts - pending.created_at, 3),
+                "window_seconds": PENDING_USER_WINDOW_S,
+            },
+        )
 
 def _find_recent_user_for_door(door_id: str, now_ts: float) -> int | None:
     data = _current_user_by_door.get(door_id)
@@ -303,7 +324,7 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
     _cleanup_user_bindings(now_ts)
     _cleanup_reader_dedupe(now_ts)
     _cleanup_epc_states(now_ts)
-    _cleanup_pending_crosses(now_ts)
+    _cleanup_pending_crosses(db, now_ts)
 
     route = _resolve_route(reader_id, event.antenna)
     if route is None:
@@ -680,6 +701,7 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
             zone_id=route.zone_id,
             zone_role=route.zone_role,
             movement_code=movement_code,
+            review_status="pending",
             payload_json={
                 "route": route_label,
                 "seen_count_same_side": state.seen_count_same_side,
@@ -773,9 +795,12 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
             zone_id=route.zone_id,
             zone_role=route.zone_role,
             movement_code=movement_code,
+            review_status="pending",
             payload_json={
                 "route": route_label,
-                "pending_user_window_seconds": PENDING_USER_WINDOW_S,
+                "door_id": route.door_id,
+                "previous_zone_role": previous_route.zone_role,
+                "current_zone_role": route.zone_role,
             },
         )
 

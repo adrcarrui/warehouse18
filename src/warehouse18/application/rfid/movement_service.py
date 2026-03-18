@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -14,6 +14,7 @@ from warehouse18.application.rfid.epc96 import EPCSchema, load_epc_schema, parse
 from warehouse18.application.rfid.event_log_service import log_rfid_event
 from warehouse18.domain.models.movement import Movement
 from warehouse18.domain.models.movement_type import MovementType as LocalMovementType
+from warehouse18.domain.models.rfid_event_log import RfidEventLog
 from warehouse18.domain.models.user import User
 from warehouse18.infrastructure.integrations.mySim import MySimClient, MySimConfig
 from warehouse18.infrastructure.integrations.mySim.adapter import MySimAdapter
@@ -164,6 +165,13 @@ def create_local_movement(
         notes=notes,
         item_key=item_key,
         mysim_user_id=mysim_user_id,
+        review_status="pending",
+        mysim_sync_status="pending_review",
+        reviewed_at=None,
+        reviewed_by_user_id=None,
+        review_note=None,
+        mysim_synced_at=None,
+        mysim_sync_error=None,
     )
 
     db.add(mv)
@@ -177,7 +185,7 @@ def create_local_movement(
     }
 
     log.info(
-        "RFID local movement created | movement_id=%s code=%s epc=%s item_key=%s local_user_id=%s mysim_user_id=%s",
+        "RFID local movement created (pending review) | movement_id=%s code=%s epc=%s item_key=%s local_user_id=%s mysim_user_id=%s",
         mv.id,
         movement_code,
         epc,
@@ -188,7 +196,7 @@ def create_local_movement(
     return True, payload
 
 
-def sync_movement_to_mysim(
+def build_mysim_sync_payload(
     *,
     movement_code: str,
     item_key: str,
@@ -198,7 +206,6 @@ def sync_movement_to_mysim(
     description: str,
 ) -> dict[str, Any]:
     client, api = mysim_client_and_adapter()
-    cfg = client.cfg
 
     part_db_id = api.get_part_id_by_part_code(item_key)
     if part_db_id is None:
@@ -225,8 +232,6 @@ def sync_movement_to_mysim(
         "parentRecord": item_key,
     }
 
-    resp = post_movement_direct(cfg, row)
-
     return {
         "part_db_id": int(part_db_id),
         "item_key": item_key,
@@ -234,6 +239,54 @@ def sync_movement_to_mysim(
         "movement_type_name": movement_type_name,
         "source_location": int(source_location),
         "destination_location": int(destination_location),
+        "row": row,
+    }
+
+
+def sync_pending_reviewed_movement(
+    db: Session,
+    *,
+    movement: Movement,
+    movement_event: RfidEventLog,
+) -> dict[str, Any]:
+    payload = movement_event.payload_json or {}
+    sync_payload = payload.get("mysim_sync_payload") or {}
+    row = sync_payload.get("row")
+    if not row:
+        raise ValueError("movement_created event does not contain mysim_sync_payload.row")
+
+    client, _api = mysim_client_and_adapter()
+    resp = post_movement_direct(client.cfg, row)
+
+    movement.mysim_sync_status = "ok"
+    movement.mysim_synced_at = datetime.now(timezone.utc)
+    movement.mysim_sync_error = None
+    db.add(movement)
+    db.commit()
+
+    log_rfid_event(
+        db,
+        event_type="movement_sync_ok",
+        reason="movement_sent",
+        epc=movement_event.epc,
+        reader_id=movement_event.reader_id,
+        antenna=movement_event.antenna,
+        door_id=movement_event.door_id,
+        zone_id=movement_event.zone_id,
+        zone_role=movement_event.zone_role,
+        movement_code=movement_event.movement_code,
+        movement_id=movement.id,
+        user_id=movement.user_id,
+        mysim_user_id=movement.mysim_user_id,
+        payload_json={
+            "mysim_row": row,
+            "mysim_response": resp,
+        },
+        review_status="confirmed",
+    )
+
+    return {
+        "status": "ok",
         "response": resp,
     }
 
@@ -322,10 +375,24 @@ def finalize_movement_for_user(
     movement_id = int(local_result["movement_id"])
     item_key = str(local_result["item_key"])
 
+    mysim_description = (
+        f"RFID {route_label} | epc={epc} | item_key={item_key} | "
+        f"door_id={current_route.door_id} | reader_id={reader_id} | antenna={antenna} | rssi={rssi}"
+    )
+
+    mysim_sync_payload = build_mysim_sync_payload(
+        movement_code=movement_code,
+        item_key=item_key,
+        mysim_user_id=mysim_user_id,
+        current_route=current_route,
+        previous_route=previous_route,
+        description=mysim_description,
+    )
+
     log_rfid_event(
         db,
         event_type="movement_created",
-        reason="movement_created",
+        reason="movement_created_pending_review",
         epc=epc,
         reader_id=reader_id,
         antenna=antenna,
@@ -336,82 +403,19 @@ def finalize_movement_for_user(
         movement_id=movement_id,
         user_id=local_user.id,
         mysim_user_id=mysim_user_id,
+        review_status="pending",
         payload_json={
             "route": route_label,
             "item_key": item_key,
             "from_location_id": previous_route.location_id,
             "to_location_id": current_route.location_id,
+            "mysim_sync_payload": mysim_sync_payload,
         },
     )
 
-    mysim_description = (
-        f"RFID {route_label} | epc={epc} | item_key={item_key} | "
-        f"door_id={current_route.door_id} | reader_id={reader_id} | antenna={antenna} | rssi={rssi}"
-    )
-
-    try:
-        mysim_result = sync_movement_to_mysim(
-            movement_code=movement_code,
-            item_key=item_key,
-            mysim_user_id=mysim_user_id,
-            current_route=current_route,
-            previous_route=previous_route,
-            description=mysim_description,
-        )
-        mysim_status = "ok"
-        mysim_reason = "movement_sent"
-
-        log_rfid_event(
-            db,
-            event_type="movement_sync_ok",
-            reason="movement_sent",
-            epc=epc,
-            reader_id=reader_id,
-            antenna=antenna,
-            door_id=current_route.door_id,
-            zone_id=current_route.zone_id,
-            zone_role=current_route.zone_role,
-            movement_code=movement_code,
-            movement_id=movement_id,
-            user_id=local_user.id,
-            mysim_user_id=mysim_user_id,
-            payload_json={
-                "route": route_label,
-                "item_key": item_key,
-                "mysim_result": mysim_result,
-            },
-        )
-
-    except Exception as e:
-        log.exception("RFID mySim sync failed | epc=%s item_key=%s", epc, item_key)
-        mysim_result = {"detail": str(e)}
-        mysim_status = "error"
-        mysim_reason = "movement_not_sent"
-
-        log_rfid_event(
-            db,
-            event_type="movement_sync_error",
-            reason="movement_not_sent",
-            epc=epc,
-            reader_id=reader_id,
-            antenna=antenna,
-            door_id=current_route.door_id,
-            zone_id=current_route.zone_id,
-            zone_role=current_route.zone_role,
-            movement_code=movement_code,
-            movement_id=movement_id,
-            user_id=local_user.id,
-            mysim_user_id=mysim_user_id,
-            payload_json={
-                "route": route_label,
-                "item_key": item_key,
-                "detail": str(e),
-            },
-        )
-
     return {
         "status": "ok",
-        "reason": "movement_created",
+        "reason": "movement_created_pending_review",
         "epc": epc,
         "antenna": antenna,
         "reader_id": reader_id,
@@ -427,9 +431,9 @@ def finalize_movement_for_user(
         "item_key": item_key,
         "user_id": local_user.id,
         "mysim_user_id": mysim_user_id,
+        "review_status": "pending",
         "mysim_sync": {
-            "status": mysim_status,
-            "reason": mysim_reason,
-            "result": mysim_result,
+            "status": "pending_review",
+            "reason": "manual_confirmation_required",
         },
     }

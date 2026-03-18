@@ -26,10 +26,8 @@ def log_rfid_event(
     user_id: int | None = None,
     mysim_user_id: int | None = None,
     payload_json: dict[str, Any] | None = None,
+    review_status: str = "confirmed",
 ) -> None:
-    """
-    Inserta un evento RFID en histórico. Si falla, no rompe el flujo RFID.
-    """
     try:
         row = RfidEventLog(
             epc=epc,
@@ -45,9 +43,16 @@ def log_rfid_event(
             user_id=user_id,
             mysim_user_id=mysim_user_id,
             payload_json=payload_json or {},
+            review_status=review_status,
         )
         db.add(row)
         db.commit()
-    except Exception:
+    except Exception as e:
         db.rollback()
-        log.exception("RFID event log insert failed | event_type=%s epc=%s", event_type, epc)
+        log.exception(
+            "RFID event log insert failed | event_type=%s epc=%s movement_id=%s",
+            event_type,
+            epc,
+            movement_id,
+            e,
+        )
