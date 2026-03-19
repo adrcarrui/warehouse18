@@ -245,7 +245,9 @@ class MovementOut(ORMBase):
     reference_type: Optional[str] = None
     reference_id: Optional[int] = None
 
+    mysim_user_id: Optional[int] = None
     user_id: Optional[int] = None
+
     created_at: datetime
     notes: Optional[str] = None
 
@@ -258,6 +260,23 @@ class MovementOut(ORMBase):
     mysim_sync_status: str
     mysim_synced_at: Optional[datetime] = None
     mysim_sync_error: Optional[str] = None
+    mysim_movement_id: Optional[str] = None
+
+class MovementLocationsUpdateIn(BaseModel):
+    from_location_id: Optional[int] = None
+    to_location_id: Optional[int] = None
+
+
+class MovementQuantityUpdateIn(BaseModel):
+    quantity: Optional[Decimal] = Field(default=None, gt=0)
+
+from pydantic import field_serializer
+
+@field_serializer("quantity")
+def serialize_quantity(self, v: Optional[Decimal]):
+    if v is None:
+        return None
+    return float(v.normalize())
 
 T = TypeVar("T")
 
@@ -299,6 +318,7 @@ class MovementReviewOut(BaseModel):
     reviewed_by_user_id: int
     mysim_sync_status: str
     mysim_sync_error: Optional[str] = None
+    mysim_movement_id: Optional[str] = None
 
 
 class RFIDEventReviewIn(BaseModel):

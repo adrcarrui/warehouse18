@@ -33,3 +33,4 @@ class Movement(Base):
     mysim_sync_status = Column(String(20), nullable=False, default="not_sent")
     mysim_synced_at = Column(DateTime(timezone=True), nullable=True)
     mysim_sync_error = Column(Text, nullable=True)
+    mysim_movement_id = Column(Text, nullable=True, index=True)

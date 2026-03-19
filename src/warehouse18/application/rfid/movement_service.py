@@ -126,6 +126,35 @@ def post_movement_direct(
         return {"status_code": resp.status_code, "text": resp.text[:2000]}
 
 
+def extract_mysim_movement_id(resp: Any) -> str | None:
+    """
+    Intenta extraer el movementId devuelto por mySim.
+    Soporta varios formatos porque, claro, una sola estructura era demasiado fácil.
+    """
+    if resp is None:
+        return None
+
+    if isinstance(resp, list):
+        for item in resp:
+            found = extract_mysim_movement_id(item)
+            if found:
+                return found
+        return None
+
+    if isinstance(resp, dict):
+        for key in ("movementId", "id", "recordId"):
+            value = resp.get(key)
+            if value not in (None, "", 0):
+                return str(value)
+
+        for key in ("data", "result", "rows", "items", "payload"):
+            nested = resp.get(key)
+            found = extract_mysim_movement_id(nested)
+            if found:
+                return found
+
+    return None
+
 def create_local_movement(
     db: Session,
     *,
@@ -249,6 +278,12 @@ def sync_pending_reviewed_movement(
     movement: Movement,
     movement_event: RfidEventLog,
 ) -> dict[str, Any]:
+    if getattr(movement, "mysim_movement_id", None):
+        return {
+            "status": "already_synced",
+            "mysim_movement_id": movement.mysim_movement_id,
+        }
+
     payload = movement_event.payload_json or {}
     sync_payload = payload.get("mysim_sync_payload") or {}
     row = sync_payload.get("row")
@@ -258,11 +293,36 @@ def sync_pending_reviewed_movement(
     client, _api = mysim_client_and_adapter()
     resp = post_movement_direct(client.cfg, row)
 
+    log.info("RFID mySim sync response | movement_id=%s resp=%r", movement.id, resp)
+
+    def try_extract_movement_id(obj: Any) -> str | None:
+        if isinstance(obj, dict):
+            if "movementId" in obj and obj["movementId"]:
+                return str(obj["movementId"])
+
+            for value in obj.values():
+                found = try_extract_movement_id(value)
+                if found:
+                    return found
+
+        elif isinstance(obj, list):
+            for item in obj:
+                found = try_extract_movement_id(item)
+                if found:
+                    return found
+
+        return None
+
+    mysim_movement_id = try_extract_movement_id(resp)
+
     movement.mysim_sync_status = "ok"
     movement.mysim_synced_at = datetime.now(timezone.utc)
     movement.mysim_sync_error = None
+    movement.mysim_movement_id = mysim_movement_id
+
     db.add(movement)
     db.commit()
+    db.refresh(movement)
 
     log_rfid_event(
         db,
@@ -281,15 +341,23 @@ def sync_pending_reviewed_movement(
         payload_json={
             "mysim_row": row,
             "mysim_response": resp,
+            "mysim_movement_id": mysim_movement_id,
         },
         review_status="confirmed",
     )
 
+    # Reconcile only AFTER movement_sync_ok has been logged
+    if movement.mysim_sync_status == "ok" and not movement.mysim_movement_id:
+        recovered = reconcile_missing_mysim_movement_id(db, movement)
+        if recovered:
+            db.refresh(movement)
+            mysim_movement_id = movement.mysim_movement_id
+
     return {
         "status": "ok",
         "response": resp,
+        "mysim_movement_id": mysim_movement_id,
     }
-
 
 def finalize_movement_for_user(
     *,
@@ -376,9 +444,17 @@ def finalize_movement_for_user(
     item_key = str(local_result["item_key"])
 
     mysim_description = (
-        f"RFID {route_label} | epc={epc} | item_key={item_key} | "
-        f"door_id={current_route.door_id} | reader_id={reader_id} | antenna={antenna} | rssi={rssi}"
+        f"W18:{movement_id} "
+        f"RFID {route_label} "
+        f"epc={epc} "
+        f"item_key={item_key} "
+        f"door_id={current_route.door_id} "
+        f"reader_id={reader_id} "
+        f"antenna={antenna} "
+        f"rssi={rssi}"
     )
+    
+    log.info("RFID description for mySim: %s", mysim_description)
 
     mysim_sync_payload = build_mysim_sync_payload(
         movement_code=movement_code,
@@ -437,3 +513,65 @@ def finalize_movement_for_user(
             "reason": "manual_confirmation_required",
         },
     }
+
+from typing import Any, Optional
+
+def extract_mysim_movement_id_from_response(obj: Any) -> Optional[str]:
+
+    if isinstance(obj, dict):
+        if "movementId" in obj and obj["movementId"]:
+            return str(obj["movementId"])
+
+        for value in obj.values():
+            found = extract_mysim_movement_id_from_response(value)
+            if found:
+                return found
+
+    elif isinstance(obj, list):
+        for item in obj:
+            found = extract_mysim_movement_id_from_response(item)
+            if found:
+                return found
+
+    return None 
+
+
+def reconcile_missing_mysim_movement_id(db: Session, movement: Movement) -> bool:
+
+    if movement.mysim_movement_id:
+        return True
+
+    event = (
+        db.query(RfidEventLog)
+        .filter(
+            RfidEventLog.movement_id == movement.id,
+            RfidEventLog.event_type == "movement_sync_ok",
+        )
+        .order_by(RfidEventLog.created_at.desc())
+        .first()
+    )
+
+    if not event:
+        return False
+
+    payload = event.payload_json or {}
+    mysim_response = payload.get("mysim_response")
+
+    if not mysim_response:
+        return False
+
+    recovered = extract_mysim_movement_id_from_response(mysim_response)
+
+    if not recovered:
+        recovered = payload.get("mysim_movement_id")
+
+    if not recovered:
+        return False
+
+    movement.mysim_movement_id = str(recovered)
+
+    db.add(movement)
+    db.commit()
+    db.refresh(movement)
+
+    return True

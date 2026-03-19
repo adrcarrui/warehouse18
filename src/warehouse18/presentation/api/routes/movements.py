@@ -18,6 +18,7 @@ from warehouse18.presentation.api.schemas import (
     MovementReviewIn,
     MovementReviewOut,
     MovementLocationsUpdateIn,
+    MovementQuantityUpdateIn,
     PageOut,
 )
 
@@ -169,14 +170,39 @@ def confirm_movement_review(
     if not reviewer:
         raise HTTPException(status_code=404, detail="Reviewer user not found")
 
-    movement = db.query(Movement).filter(Movement.id == movement_id).first()
+    movement = db.query(Movement).filter(Movement.id == movement_id).with_for_update().first()
     if not movement:
         raise HTTPException(status_code=404, detail="Movement not found")
+
+    # Si ya estaba confirmado y sincronizado, no reenviar otra vez
+    if movement.review_status == "confirmed" and movement.mysim_sync_status == "ok":
+        return MovementReviewOut(
+            movement_id=movement.id,
+            review_status=movement.review_status,
+            reviewed_at=movement.reviewed_at,
+            reviewed_by_user_id=movement.reviewed_by_user_id,
+            mysim_sync_status=movement.mysim_sync_status,
+            mysim_sync_error=movement.mysim_sync_error,
+            mysim_movement_id=movement.mysim_movement_id,
+        )
+
+    # Si está en proceso de sync, tampoco dejar otra confirmación simultánea
+    if movement.mysim_sync_status == "syncing":
+        raise HTTPException(status_code=409, detail="Movement sync already in progress")
+
+    # Confirm must only happen once, from pending state
+    if movement.review_status != "pending":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only pending movements can be confirmed (current status={movement.review_status})",
+        )
 
     movement.review_status = "confirmed"
     movement.reviewed_at = datetime.now(timezone.utc)
     movement.reviewed_by_user_id = body.reviewed_by_user_id
     movement.review_note = body.note
+    movement.mysim_sync_status = "syncing"
+    movement.mysim_sync_error = None
     db.add(movement)
     db.commit()
     db.refresh(movement)
@@ -202,6 +228,10 @@ def confirm_movement_review(
         .first()
     )
     if not movement_event:
+        movement.mysim_sync_status = "error"
+        movement.mysim_sync_error = "movement_created RFID event not found"
+        db.add(movement)
+        db.commit()
         raise HTTPException(status_code=409, detail="movement_created RFID event not found")
 
     try:
@@ -243,6 +273,7 @@ def confirm_movement_review(
         reviewed_by_user_id=movement.reviewed_by_user_id,
         mysim_sync_status=movement.mysim_sync_status,
         mysim_sync_error=movement.mysim_sync_error,
+        mysim_movement_id=movement.mysim_movement_id,
     )
 
 
@@ -256,9 +287,20 @@ def reject_movement_review(
     if not reviewer:
         raise HTTPException(status_code=404, detail="Reviewer user not found")
 
-    movement = db.query(Movement).filter(Movement.id == movement_id).first()
+    movement = (
+        db.query(Movement)
+        .filter(Movement.id == movement_id)
+        .with_for_update()
+        .first()
+    )
     if not movement:
         raise HTTPException(status_code=404, detail="Movement not found")
+
+    if movement.review_status != "pending":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only pending movements can be rejected (current status={movement.review_status})",
+        )
 
     movement.review_status = "rejected"
     movement.reviewed_at = datetime.now(timezone.utc)
@@ -289,6 +331,7 @@ def reject_movement_review(
         reviewed_by_user_id=movement.reviewed_by_user_id,
         mysim_sync_status=movement.mysim_sync_status,
         mysim_sync_error=movement.mysim_sync_error,
+        mysim_movement_id=movement.mysim_movement_id,
     )
 
 @router.patch("/{movement_id}/locations", response_model=MovementOut)
@@ -354,6 +397,58 @@ def update_movement_locations(
         if body.to_location_id is not None:
             sync_payload["destination_location"] = body.to_location_id
             row["destinationLocation"] = body.to_location_id
+
+        if row:
+            sync_payload["row"] = row
+            payload["mysim_sync_payload"] = sync_payload
+
+        movement_event.payload_json = payload
+        db.add(movement_event)
+
+    db.commit()
+    db.refresh(movement)
+
+    return movement
+
+@router.patch("/{movement_id}/quantity", response_model=MovementOut)
+def update_movement_quantity(
+    movement_id: int,
+    body: MovementQuantityUpdateIn,
+    db: Session = Depends(get_db),
+):
+    movement = db.query(Movement).filter(Movement.id == movement_id).first()
+    if not movement:
+        raise HTTPException(status_code=404, detail="Movement not found")
+
+    if movement.review_status != "pending":
+        raise HTTPException(
+            status_code=409,
+            detail="Only pending movements can be edited",
+        )
+
+    if body.quantity <= 0:
+        raise HTTPException(status_code=409, detail="Quantity must be greater than zero")
+
+    movement.quantity = body.quantity
+    db.add(movement)
+
+    movement_event = (
+        db.query(RfidEventLog)
+        .filter(
+            RfidEventLog.movement_id == movement_id,
+            RfidEventLog.event_type == "movement_created",
+        )
+        .order_by(RfidEventLog.created_at.desc())
+        .first()
+    )
+
+    if movement_event:
+        payload = dict(movement_event.payload_json or {})
+        payload["quantity"] = float(body.quantity)
+
+        sync_payload = dict(payload.get("mysim_sync_payload") or {})
+        row = dict(sync_payload.get("row") or {})
+        row["quantity"] = float(body.quantity)
 
         if row:
             sync_payload["row"] = row

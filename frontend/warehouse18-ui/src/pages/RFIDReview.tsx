@@ -26,6 +26,7 @@ type MovementOut = {
   mysim_sync_status: string;
   mysim_synced_at?: string | null;
   mysim_sync_error?: string | null;
+  mysim_movement_id?: string | null;
 };
 
 type MovementReviewIn = {
@@ -166,6 +167,7 @@ function LocationAutocomplete({
 
 export default function RFIDReviewPage() {
   const [reviewerUserId, setReviewerUserId] = useState("1");
+  const [confirmingMovementIds, setConfirmingMovementIds] = useState<number[]>([]);
   const [movementRejectNote, setMovementRejectNote] = useState(
     "Invalid reading or discarded movement"
   );
@@ -219,6 +221,8 @@ export default function RFIDReviewPage() {
   const movementQuery = useMemo(() => {
     return [movementItemKeyFilter.trim(), movementUserFilter.trim()].filter(Boolean).join(" ");
   }, [movementItemKeyFilter, movementUserFilter]);
+
+  const [editingQty, setEditingQty] = useState<Record<number, string>>({});
 
   async function loadLocationMap() {
     try {
@@ -363,6 +367,12 @@ export default function RFIDReviewPage() {
     };
   }, [locToText, locationEditorOpen]);
 
+  function currentQtyValue(row: MovementOut, editingQty: Record<number, string>) {
+    if (editingQty[row.id] != null) return editingQty[row.id];
+    if (row.quantity == null || row.quantity === "") return "1";
+    return String(row.quantity);
+  }
+
   function openLocationEditor(row: MovementOut) {
     setEditingMovement(row);
     setLocFromId(row.from_location_id ?? null);
@@ -409,8 +419,39 @@ export default function RFIDReviewPage() {
     }
   }
 
-  async function confirmMovement(row: MovementOut) {
+  async function saveMovementQuantity(row: MovementOut) {
     setErr(null);
+    try {
+      const raw = editingQty[row.id] ?? (row.quantity == null ? "1" : String(row.quantity));
+      const qty = Number(raw);
+
+      if (!Number.isFinite(qty) || qty <= 0) {
+        setErr("Quantity must be greater than zero");
+        return;
+      }
+
+      await apiJson("PATCH", `/api/movements/${row.id}/quantity`, {
+        quantity: qty,
+      });
+
+      await loadMovements(movementPage);
+
+      setEditingQty((prev) => {
+        const next = { ...prev };
+        delete next[row.id];
+        return next;
+      });
+    } catch (e: any) {
+      setErr(e?.message ?? String(e));
+    }
+  }
+  
+   async function confirmMovement(row: MovementOut) {
+    if (confirmingMovementIds.includes(row.id)) return;
+
+    setErr(null);
+    setConfirmingMovementIds((prev) => [...prev, row.id]);
+
     try {
       const payload: MovementReviewIn = {
         reviewed_by_user_id: reviewerId,
@@ -421,6 +462,8 @@ export default function RFIDReviewPage() {
       await loadEvents();
     } catch (e: any) {
       setErr(e?.message ?? String(e));
+    } finally {
+      setConfirmingMovementIds((prev) => prev.filter((id) => id !== row.id));
     }
   }
 
@@ -678,7 +721,24 @@ export default function RFIDReviewPage() {
                     </td>
 
                     <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                      {quantityLabel(r)}
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={currentQtyValue(r, editingQty)}
+                          onChange={(e) =>
+                            setEditingQty((prev) => ({
+                              ...prev,
+                              [r.id]: e.target.value,
+                            }))
+                          }
+                          className="w-20 rounded border border-zinc-300 px-2 py-1 text-sm"
+                        />
+                        <Button variant="outline" size="sm" onClick={() => saveMovementQuantity(r)}>
+                          Save
+                        </Button>
+                      </div>
                     </td>
 
                     <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
@@ -686,8 +746,13 @@ export default function RFIDReviewPage() {
                         <Button variant="outline" size="sm" onClick={() => openLocationEditor(r)}>
                           Edit locations
                         </Button>
-                        <Button variant="primary" size="sm" onClick={() => confirmMovement(r)}>
-                          Confirm
+                        <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={() => confirmMovement(r)}
+                        disabled={confirmingMovementIds.includes(r.id)}
+                        >
+                        {confirmingMovementIds.includes(r.id) ? "Confirming..." : "Confirm"}
                         </Button>
                         <Button variant="danger" size="sm" onClick={() => rejectMovement(r)}>
                           Reject

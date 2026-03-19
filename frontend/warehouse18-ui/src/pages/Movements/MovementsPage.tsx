@@ -11,20 +11,22 @@ type MovementOut = {
   id: number;
   movement_type_id: number;
   item_id?: number | null;
-  quantity?: string | number | null; // numeric suele venir como string
+  item_key?: string | null;
+  quantity?: string | number | null;
   from_location_id?: number | null;
   to_location_id?: number | null;
-  reference_type?: string | null;
-  reference_id?: number | null;
   user_id?: number | null;
-  created_at: string; // timestamptz
+  created_at: string;
   notes?: string | null;
+  mysim_movement_id?: string | null;
 };
+
 type MovementTypeOut = {
   id: number;
   code: string;
   name: string;
 };
+
 function fmtDate(v?: string | null) {
   if (!v) return "";
   const d = new Date(v);
@@ -40,28 +42,29 @@ function toNumberOrUndefined(v: string): number | undefined {
 }
 
 function qtyToText(q?: string | number | null) {
-  if (q == null) return "";
+  if (q == null || q === "") return "1";
   return typeof q === "number" ? String(q) : q;
 }
 
+function partToText(m: MovementOut) {
+  return m.item_key || (m.item_id != null ? String(m.item_id) : "");
+}
+
 export default function MovementsPage() {
-  // filtros por columna (IDs / ref / notas)
   const [idFilter, setIdFilter] = useState("");
   const [movementTypeFilter, setMovementTypeFilter] = useState("");
-  const [itemIdFilter, setItemIdFilter] = useState("");
+  const [partFilter, setPartFilter] = useState("");
   const [fromIdFilter, setFromIdFilter] = useState("");
   const [toIdFilter, setToIdFilter] = useState("");
-  const [refTypeFilter, setRefTypeFilter] = useState("");
-  const [refIdFilter, setRefIdFilter] = useState("");
   const [userIdFilter, setUserIdFilter] = useState("");
   const [notesFilter, setNotesFilter] = useState("");
+  const [mysimMovementIdFilter, setMysimMovementIdFilter] = useState("");
+
   const [mtById, setMtById] = useState<Record<number, MovementTypeOut>>({});
 
-  // paging
   const [page, setPage] = useState(1);
   const [pageSize] = useState(25);
 
-  // data
   const [rows, setRows] = useState<MovementOut[]>([]);
   const [meta, setMeta] = useState<PageMeta>({
     page: 1,
@@ -74,10 +77,16 @@ export default function MovementsPage() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // q combinado (si tu backend soporta q)
   const qCombined = useMemo(() => {
-    return [idFilter.trim(), refTypeFilter.trim(), notesFilter.trim()].filter(Boolean).join(" ");
-  }, [idFilter, refTypeFilter, notesFilter]);
+    return [
+      idFilter.trim(),
+      partFilter.trim(),
+      notesFilter.trim(),
+      mysimMovementIdFilter.trim(),
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }, [idFilter, partFilter, notesFilter, mysimMovementIdFilter]);
 
   const pages = useMemo(() => {
     const ps = meta.pageSize || pageSize || 25;
@@ -93,10 +102,10 @@ export default function MovementsPage() {
       for (const mt of data) map[mt.id] = mt;
       setMtById(map);
     } catch {
-      // si falla, no pasa nada: seguiremos mostrando el id
       setMtById({});
     }
   }
+
   async function load(p: number) {
     setLoading(true);
     setErr(null);
@@ -107,17 +116,14 @@ export default function MovementsPage() {
           const search = movementTypeFilter.trim().toLowerCase();
           if (!search) return undefined;
 
-          const found = Object.values(mtById).find(
-            (mt) => mt.name.toLowerCase().includes(search)
+          const found = Object.values(mtById).find((mt) =>
+            mt.name.toLowerCase().includes(search)
           );
 
           return found?.id;
         })(),
-        item_id: toNumberOrUndefined(itemIdFilter),
         from_location_id: toNumberOrUndefined(fromIdFilter),
         to_location_id: toNumberOrUndefined(toIdFilter),
-        reference_type: refTypeFilter.trim() || undefined,
-        reference_id: toNumberOrUndefined(refIdFilter),
         user_id: toNumberOrUndefined(userIdFilter),
         page: p,
         page_size: pageSize,
@@ -133,15 +139,14 @@ export default function MovementsPage() {
     }
   }
 
-useEffect(() => {
-  (async () => {
-    await loadMovementTypes();
-    await load(1);
-  })();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, []);
+  useEffect(() => {
+    (async () => {
+      await loadMovementTypes();
+      await load(1);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // debounce search
   const debounceRef = useRef<number | null>(null);
   const didMountRef = useRef(false);
 
@@ -159,13 +164,11 @@ useEffect(() => {
   }, [
     qCombined,
     movementTypeFilter,
-    itemIdFilter,
     fromIdFilter,
     toIdFilter,
-    refTypeFilter,
-    refIdFilter,
     userIdFilter,
     notesFilter,
+    mysimMovementIdFilter,
     Object.keys(mtById).length,
   ]);
 
@@ -179,13 +182,12 @@ useEffect(() => {
   function resetFilters() {
     setIdFilter("");
     setMovementTypeFilter("");
-    setItemIdFilter("");
+    setPartFilter("");
     setFromIdFilter("");
     setToIdFilter("");
-    setRefTypeFilter("");
-    setRefIdFilter("");
     setUserIdFilter("");
     setNotesFilter("");
+    setMysimMovementIdFilter("");
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
     load(1);
   }
@@ -193,7 +195,7 @@ useEffect(() => {
   return (
     <AppShell
       title="Movements"
-      subtitle="Movements from DB (public.movements)"
+      subtitle="Movements history"
       actions={
         <div className="flex items-center gap-2">
           <Button type="button" variant="outline" onClick={resetFilters} disabled={loading}>
@@ -216,14 +218,12 @@ useEffect(() => {
                 <thead className="bg-zinc-50">
                   <tr>
                     {[
-                      "ID",
-                      "TypeId",
-                      "ItemId",
+                      "ID / MySim",
+                      "Type",
+                      "Part",
                       "Qty",
                       "FromId",
                       "ToId",
-                      "RefType",
-                      "RefId",
                       "UserId",
                       "Created",
                       "Notes",
@@ -237,46 +237,72 @@ useEffect(() => {
                     ))}
                   </tr>
 
-                  {/* filtros */}
                   <tr>
                     <th className="border-b border-zinc-200 bg-white px-3 py-2">
-                      <Input value={idFilter} onChange={(e) => setIdFilter(e.target.value)} onKeyDown={onFilterKeyDown} placeholder="id…" />
+                      <Input
+                        value={idFilter}
+                        onChange={(e) => setIdFilter(e.target.value)}
+                        onKeyDown={onFilterKeyDown}
+                        placeholder="id…"
+                      />
                     </th>
 
                     <th className="border-b border-zinc-200 bg-white px-3 py-2">
-                      <Input value={movementTypeFilter} onChange={(e) => setMovementTypeFilter(e.target.value)} onKeyDown={onFilterKeyDown} placeholder="movement_type_name…" />
+                      <Input
+                        value={movementTypeFilter}
+                        onChange={(e) => setMovementTypeFilter(e.target.value)}
+                        onKeyDown={onFilterKeyDown}
+                        placeholder="movement type…"
+                      />
                     </th>
 
                     <th className="border-b border-zinc-200 bg-white px-3 py-2">
-                      <Input value={itemIdFilter} onChange={(e) => setItemIdFilter(e.target.value)} onKeyDown={onFilterKeyDown} placeholder="item_id…" />
-                    </th>
-
-                    <th className="border-b border-zinc-200 bg-white px-3 py-2" />
-
-                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
-                      <Input value={fromIdFilter} onChange={(e) => setFromIdFilter(e.target.value)} onKeyDown={onFilterKeyDown} placeholder="from_location_id…" />
-                    </th>
-
-                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
-                      <Input value={toIdFilter} onChange={(e) => setToIdFilter(e.target.value)} onKeyDown={onFilterKeyDown} placeholder="to_location_id…" />
-                    </th>
-
-                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
-                      <Input value={refTypeFilter} onChange={(e) => setRefTypeFilter(e.target.value)} onKeyDown={onFilterKeyDown} placeholder="reference_type…" />
-                    </th>
-
-                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
-                      <Input value={refIdFilter} onChange={(e) => setRefIdFilter(e.target.value)} onKeyDown={onFilterKeyDown} placeholder="reference_id…" />
-                    </th>
-
-                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
-                      <Input value={userIdFilter} onChange={(e) => setUserIdFilter(e.target.value)} onKeyDown={onFilterKeyDown} placeholder="user_id…" />
+                      <Input
+                        value={partFilter}
+                        onChange={(e) => setPartFilter(e.target.value)}
+                        onKeyDown={onFilterKeyDown}
+                        placeholder="part…"
+                      />
                     </th>
 
                     <th className="border-b border-zinc-200 bg-white px-3 py-2" />
 
                     <th className="border-b border-zinc-200 bg-white px-3 py-2">
-                      <Input value={notesFilter} onChange={(e) => setNotesFilter(e.target.value)} onKeyDown={onFilterKeyDown} placeholder="notes…" />
+                      <Input
+                        value={fromIdFilter}
+                        onChange={(e) => setFromIdFilter(e.target.value)}
+                        onKeyDown={onFilterKeyDown}
+                        placeholder="from_location_id…"
+                      />
+                    </th>
+
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
+                      <Input
+                        value={toIdFilter}
+                        onChange={(e) => setToIdFilter(e.target.value)}
+                        onKeyDown={onFilterKeyDown}
+                        placeholder="to_location_id…"
+                      />
+                    </th>
+
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
+                      <Input
+                        value={userIdFilter}
+                        onChange={(e) => setUserIdFilter(e.target.value)}
+                        onKeyDown={onFilterKeyDown}
+                        placeholder="user_id…"
+                      />
+                    </th>
+
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2" />
+
+                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
+                      <Input
+                        value={notesFilter}
+                        onChange={(e) => setNotesFilter(e.target.value)}
+                        onKeyDown={onFilterKeyDown}
+                        placeholder="notes / mysim id…"
+                      />
                     </th>
                   </tr>
                 </thead>
@@ -284,23 +310,50 @@ useEffect(() => {
                 <tbody>
                   {rows.map((m) => (
                     <tr key={m.id} className="hover:bg-zinc-50">
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm font-medium text-black tabular-nums">{m.id}</td>
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">{mtById[m.movement_type_id]?.name ?? `#${m.movement_type_id}`}</td>{/*{m.movement_type_id}</td>*/}
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">{m.item_id ?? ""}</td>
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">{qtyToText(m.quantity)}</td>
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">{m.from_location_id ?? ""}</td>
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">{m.to_location_id ?? ""}</td>
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">{m.reference_type ?? ""}</td>
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">{m.reference_id ?? ""}</td>
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">{m.user_id ?? ""}</td>
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-zinc-600">{fmtDate(m.created_at)}</td>
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">{m.notes ?? ""}</td>
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
+                        <div className="font-medium tabular-nums">{m.id}</div>
+                        {m.mysim_movement_id ? (
+                          <div className="text-xs text-zinc-500">{m.mysim_movement_id}</div>
+                        ) : null}
+                      </td>
+
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
+                        {mtById[m.movement_type_id]?.name ?? `#${m.movement_type_id}`}
+                      </td>
+
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
+                        {partToText(m)}
+                      </td>
+
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">
+                        {qtyToText(m.quantity)}
+                      </td>
+
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">
+                        {m.from_location_id ?? ""}
+                      </td>
+
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">
+                        {m.to_location_id ?? ""}
+                      </td>
+
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">
+                        {m.user_id ?? ""}
+                      </td>
+
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-zinc-600">
+                        {fmtDate(m.created_at)}
+                      </td>
+
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
+                        {m.notes ?? ""}
+                      </td>
                     </tr>
                   ))}
 
                   {!loading && rows.length === 0 && (
                     <tr>
-                      <td colSpan={11} className="px-3 py-6 text-sm text-zinc-600">
+                      <td colSpan={9} className="px-3 py-6 text-sm text-zinc-600">
                         No results
                       </td>
                     </tr>
@@ -308,7 +361,7 @@ useEffect(() => {
 
                   {loading && (
                     <tr>
-                      <td colSpan={11} className="px-3 py-6 text-sm text-zinc-600">
+                      <td colSpan={9} className="px-3 py-6 text-sm text-zinc-600">
                         Loading…
                       </td>
                     </tr>
@@ -317,7 +370,6 @@ useEffect(() => {
               </table>
             </div>
 
-            {/* Footer paginación */}
             <div className="border-t border-zinc-200 bg-white px-3 py-2">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div className="text-sm text-zinc-600">
@@ -328,17 +380,24 @@ useEffect(() => {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <Button type="button" onClick={() => load(meta.page - 1)} disabled={loading || meta.page <= 1}>
+                  <Button
+                    type="button"
+                    onClick={() => load(meta.page - 1)}
+                    disabled={loading || meta.page <= 1}
+                  >
                     Prev
                   </Button>
-                  <Button type="button" onClick={() => load(meta.page + 1)} disabled={loading || meta.page >= pages}>
+                  <Button
+                    type="button"
+                    onClick={() => load(meta.page + 1)}
+                    disabled={loading || meta.page >= pages}
+                  >
                     Next
                   </Button>
                 </div>
               </div>
             </div>
 
-            {/* mini indicador */}
             <div className="px-3 pb-2">
               <Badge>{rows.length} rows</Badge>
             </div>
