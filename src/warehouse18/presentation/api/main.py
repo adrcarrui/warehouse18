@@ -44,7 +44,9 @@ from warehouse18.presentation.api.routes.rfid_events import router as rfid_event
 from warehouse18.presentation.api.routes.rfid_ingest import router as rfid_ingest_router
 from warehouse18.presentation.api.routes.settings import router as settings_router
 from warehouse18.presentation.api.routes.rfid_schema import router as rfid_schema_router
+from warehouse18.presentation.api.routes.integrations_health import router as integrations_health_router
 from warehouse18.application.settings_service import SettingsService
+
 
 app = FastAPI(
     title="Warehouse18 API",
@@ -81,6 +83,7 @@ app.include_router(rfid_events_router, prefix=settings.api_prefix)
 app.include_router(rfid_ingest_router, prefix=settings.api_prefix)
 app.include_router(settings_router, prefix=settings.api_prefix)
 app.include_router(rfid_schema_router, prefix=settings.api_prefix)
+app.include_router(integrations_health_router, prefix=settings.api_prefix)
 
 app.state.settings_service = SettingsService(ttl_seconds=2)
 
