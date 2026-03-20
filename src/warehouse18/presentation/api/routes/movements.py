@@ -21,6 +21,7 @@ from warehouse18.presentation.api.schemas import (
     MovementQuantityUpdateIn,
     PageOut,
 )
+from warehouse18.application.integrations.outbox_service import enqueue_movement_sync
 
 router = APIRouter(prefix="/movements", tags=["movements"])
 
@@ -186,9 +187,9 @@ def confirm_movement_review(
             mysim_movement_id=movement.mysim_movement_id,
         )
 
-    # Si está en proceso de sync, tampoco dejar otra confirmación simultánea
-    if movement.mysim_sync_status == "syncing":
-        raise HTTPException(status_code=409, detail="Movement sync already in progress")
+    # Si ya está en cola o en proceso, no dejar otra confirmación simultánea
+    if movement.mysim_sync_status in {"queued", "syncing"}:
+        raise HTTPException(status_code=409, detail="Movement sync already queued or in progress")
 
     # Confirm must only happen once, from pending state
     if movement.review_status != "pending":
@@ -201,11 +202,17 @@ def confirm_movement_review(
     movement.reviewed_at = datetime.now(timezone.utc)
     movement.reviewed_by_user_id = body.reviewed_by_user_id
     movement.review_note = body.note
-    movement.mysim_sync_status = "syncing"
+    movement.mysim_sync_status = "queued"
     movement.mysim_sync_error = None
+
     db.add(movement)
-    db.commit()
-    db.refresh(movement)
+    db.flush()
+
+    enqueue_movement_sync(
+        db,
+        movement_id=movement.id,
+        trigger="manual_confirm",
+    )
 
     db.query(RfidEventLog).filter(RfidEventLog.movement_id == movement_id).update(
         {
@@ -216,54 +223,8 @@ def confirm_movement_review(
         },
         synchronize_session=False,
     )
+
     db.commit()
-
-    movement_event = (
-        db.query(RfidEventLog)
-        .filter(
-            RfidEventLog.movement_id == movement_id,
-            RfidEventLog.event_type == "movement_created",
-        )
-        .order_by(RfidEventLog.created_at.desc())
-        .first()
-    )
-    if not movement_event:
-        movement.mysim_sync_status = "error"
-        movement.mysim_sync_error = "movement_created RFID event not found"
-        db.add(movement)
-        db.commit()
-        raise HTTPException(status_code=409, detail="movement_created RFID event not found")
-
-    try:
-        sync_pending_reviewed_movement(
-            db,
-            movement=movement,
-            movement_event=movement_event,
-        )
-    except Exception as e:
-        movement.mysim_sync_status = "error"
-        movement.mysim_sync_error = str(e)
-        db.add(movement)
-        db.commit()
-
-        log_rfid_event(
-            db,
-            event_type="movement_sync_error",
-            reason="movement_not_sent",
-            epc=movement_event.epc,
-            reader_id=movement_event.reader_id,
-            antenna=movement_event.antenna,
-            door_id=movement_event.door_id,
-            zone_id=movement_event.zone_id,
-            zone_role=movement_event.zone_role,
-            movement_code=movement_event.movement_code,
-            movement_id=movement.id,
-            user_id=movement.user_id,
-            mysim_user_id=movement.mysim_user_id,
-            payload_json={"detail": str(e)},
-            review_status="confirmed",
-        )
-
     db.refresh(movement)
 
     return MovementReviewOut(
