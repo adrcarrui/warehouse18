@@ -13,6 +13,7 @@ from warehouse18.domain.models.rfid_event_log import RfidEventLog
 from warehouse18.domain.models.user import User
 from warehouse18.infrastructure.db import get_db
 from warehouse18.presentation.api.schemas import RFIDEventReviewIn
+from warehouse18.presentation.api.security import require_rfid_api_key
 
 router = APIRouter(prefix="/rfid", tags=["RFID Events"])
 
@@ -135,6 +136,7 @@ def get_rfid_event_history(
 def confirm_rfid_event(
     event_id: int,
     body: RFIDEventReviewIn,
+    _: None = Depends(require_rfid_api_key),
     db: Session = Depends(get_db),
 ):
     reviewer = db.query(User).filter(User.id == body.reviewed_by_user_id).first()
@@ -167,6 +169,7 @@ def confirm_rfid_event(
 def reject_rfid_event(
     event_id: int,
     body: RFIDEventReviewIn,
+    _: None = Depends(require_rfid_api_key),
     db: Session = Depends(get_db),
 ):
     reviewer = db.query(User).filter(User.id == body.reviewed_by_user_id).first()

@@ -2,8 +2,9 @@ from typing import List
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-BASE_DIR = Path(__file__).resolve().parents[2]  # .../warehouse18 (raíz del repo)
-ENV_FILE = BASE_DIR.parent / ".env" 
+BASE_DIR = Path(__file__).resolve().parents[2]
+ENV_FILE = BASE_DIR.parent / ".env"
+
 
 class Settings(BaseSettings):
     dsn: str
@@ -12,11 +13,16 @@ class Settings(BaseSettings):
     sql_echo: bool = False
     api_prefix: str = "/api"
     root_path: str = ""
+
     rfid_internal_enable: bool = False
     rfid_host: str = "192.168.0.178"
     rfid_port: int = 4001
-    rfid_8a_frame_hex: str = "" 
-    rfid_log_level: str = "WARNING" 
+    rfid_8a_frame_hex: str = ""
+    rfid_log_level: str = "WARNING"
+
+    # Seguridad básica RFID
+    rfid_api_key: str = ""
+    rfid_emit_enable: bool = False
 
     model_config = SettingsConfigDict(
         env_prefix="WAREHOUSE18_",
@@ -28,5 +34,6 @@ class Settings(BaseSettings):
     @property
     def cors_origins_list(self) -> List[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
 
 settings = Settings()

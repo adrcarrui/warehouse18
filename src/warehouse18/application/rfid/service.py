@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from dotenv import load_dotenv
 import asyncio
 import inspect
@@ -25,6 +26,7 @@ log.warning("RFID MODULE LOADED FROM: %s", __file__)
 Publisher = Callable[[dict[str, Any]], Any]
 REPO_ROOT = Path(__file__).resolve().parents[5]
 load_dotenv(REPO_ROOT / ".env")
+
 
 @dataclass(frozen=True)
 class RFIDServiceConfig:
@@ -54,6 +56,7 @@ class RFIDReaderService:
         log.warning("RFID CLASS SOURCE FILE = %s", inspect.getsourcefile(self.__class__))
         log.warning("RFID SERVICE VERSION = EPC_FILTER_SAFE")
         log.warning("RFID SERVICE CLASS FILE = %s", __file__)
+
         self.cfg = cfg
         self._publish = publish
         self._loop = loop
@@ -161,6 +164,7 @@ class RFIDReaderService:
 
     def _connect_and_loop(self) -> None:
         log.warning("ENTERING _connect_and_loop WITH EPC FILTER SAFE")
+
         inventory_every_s = float(os.getenv("WAREHOUSE18_RFID_INVENTORY_EVERY_S", "0.5"))
         last_inventory_ts = 0.0
 
@@ -180,9 +184,27 @@ class RFIDReaderService:
         # Activado por defecto para no dejar el flujo medio desconectado
         forward_to_ingest = os.getenv("WAREHOUSE18_RFID_FORWARD_TO_INGEST", "1") == "1"
         ingest_url = os.getenv("WAREHOUSE18_RFID_INGEST_URL", "http://127.0.0.1:8000/api/rfid/ingest")
+        ingest_api_key = (settings.rfid_api_key or "").strip()
+
         http_client = httpx.Client(timeout=10.0) if forward_to_ingest else None
+        ingest_headers: dict[str, str] = {}
+
+        if ingest_api_key:
+            ingest_headers["X-RFID-KEY"] = ingest_api_key
+
         if forward_to_ingest:
-            log.info("Forwarding RFID tags to ingest_url=%s", ingest_url)
+            log.info(
+                "Forwarding RFID tags to ingest_url=%s api_key_configured=%s",
+                ingest_url,
+                bool(ingest_api_key),
+            )
+
+        log.warning(
+            "RFID ingest config | forward=%s url=%s api_key_len=%s",
+            forward_to_ingest,
+            ingest_url,
+            len(ingest_api_key),
+        )
 
         try:
             while not self._stop.is_set():
@@ -266,12 +288,15 @@ class RFIDReaderService:
                             raw=raw.hex().upper(),
                         )
 
+                        # 1) SSE / monitor
                         self._publish_from_thread({"type": "tag", **ev.to_dict()})
 
+                        # 2) Forward a ingest
                         if http_client is not None:
                             try:
                                 resp = http_client.post(
                                     ingest_url,
+                                    headers=ingest_headers,
                                     json={
                                         "epc": ev.epc,
                                         "antenna": ev.antenna,

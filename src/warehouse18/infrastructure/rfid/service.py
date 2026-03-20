@@ -13,10 +13,8 @@ No toca base de datos. Solo genera eventos para la UI/monitor.
 from __future__ import annotations
 
 import asyncio
-import logging
 import inspect
-log = logging.getLogger("warehouse18.rfid.service")
-log.warning("RFID MODULE LOADED FROM: %s", __file__)
+import logging
 import os
 import threading
 import time
@@ -33,7 +31,8 @@ from warehouse18.application.rfid.epc96 import EPCSchema, load_epc_schema, parse
 from warehouse18.infrastructure.rfid.parser import decode_frame, try_parse_tag_from_inventory
 from warehouse18.infrastructure.rfid.tcp_client import RFIDReaderTCP, TCPConnectionConfig
 
-
+log = logging.getLogger("warehouse18.rfid.service")
+log.warning("RFID MODULE LOADED FROM: %s", __file__)
 
 Publisher = Callable[[dict[str, Any]], Any]
 
@@ -66,6 +65,7 @@ class RFIDReaderService:
         log.warning("RFID CLASS SOURCE FILE = %s", inspect.getsourcefile(self.__class__))
         log.warning("RFID SERVICE VERSION = EPC_FILTER_ACTIVE")
         log.warning("RFID SERVICE CLASS FILE = %s", __file__)
+
         self.cfg = cfg
         self._publish = publish
         self._loop = loop
@@ -73,7 +73,6 @@ class RFIDReaderService:
         self._thread: Optional[threading.Thread] = None
         self._reader: Optional[RFIDReaderTCP] = None
 
-        # Carga fija del schema EPC desde config/epc_schema.json
         root = Path(__file__).resolve().parents[4]
         schema_path = root / "config" / "epc_schema.json"
         self._epc_schema: EPCSchema | None = None
@@ -115,7 +114,6 @@ class RFIDReaderService:
                 else:
                     asyncio.run_coroutine_threadsafe(out, self._loop)
         except Exception:
-            # MVP: no matamos el hilo por un fallo de publish
             pass
 
     def _status(self, status: str, message: str | None = None) -> None:
@@ -156,10 +154,10 @@ class RFIDReaderService:
 
     def _connect_and_loop(self) -> None:
         log.warning("ENTERING _connect_and_loop WITH EPC FILTER")
-        inventory_every_s = float(os.getenv("WAREHOUSE18_RFID_INVENTORY_EVERY_S", "0.5"))
-        last_inventory_ts = 0.0  # forzar primer envío inmediato
 
-        # --- Inventory RAW frame (exacto como rfid_simple_test.py) ---
+        inventory_every_s = float(os.getenv("WAREHOUSE18_RFID_INVENTORY_EVERY_S", "0.5"))
+        last_inventory_ts = 0.0
+
         frame_hex = settings.rfid_8a_frame_hex.strip().replace(" ", "")
         if not frame_hex:
             raise RuntimeError("Missing WAREHOUSE18_RFID_8A_FRAME_HEX in .env")
@@ -173,17 +171,31 @@ class RFIDReaderService:
         log.info("Sending inventory RAW frame=%s", frame_hex.upper())
         self._reader.send_raw(inv_frame)
 
-        # --- Forward a /rfid/ingest (opcional, para demo) ---
-        forward_to_ingest = os.getenv("WAREHOUSE18_RFID_FORWARD_TO_INGEST", "0") == "1"
+        forward_to_ingest = os.getenv("WAREHOUSE18_RFID_FORWARD_TO_INGEST", "1") == "1"
         ingest_url = os.getenv("WAREHOUSE18_RFID_INGEST_URL", "http://127.0.0.1:8000/api/rfid/ingest")
-        http_client = httpx.Client(timeout=1.0) if forward_to_ingest else None
-        if forward_to_ingest:
-            log.info("Forwarding RFID tags to ingest_url=%s", ingest_url)
+        ingest_api_key = (settings.rfid_api_key or "").strip()
 
+        http_client = httpx.Client(timeout=10.0) if forward_to_ingest else None
+        ingest_headers: dict[str, str] = {}
+        
+        if ingest_api_key:
+            ingest_headers["X-RFID-KEY"] = ingest_api_key
+
+        if forward_to_ingest:
+            log.info(
+                "Forwarding RFID tags to ingest_url=%s api_key_configured=%s",
+                ingest_url,
+                bool(ingest_api_key),
+            )
+        log.warning(
+            "RFID ingest config | forward=%s url=%s api_key_len=%s",
+            forward_to_ingest,
+            ingest_url,
+            len(ingest_api_key),
+        )
         try:
             while not self._stop.is_set():
                 try:
-                    # Re-disparo del inventario (modo demo)
                     now_ts = time.time()
                     if (now_ts - last_inventory_ts) >= inventory_every_s:
                         self._reader.send_raw(inv_frame)
@@ -223,6 +235,7 @@ class RFIDReaderService:
                                 tag.antenna,
                             )
                             continue
+
                         log.warning(
                             "FILTER_CHECK EPC=%s LEN=%s ANT=%s",
                             tag.epc,
@@ -244,15 +257,31 @@ class RFIDReaderService:
                         # 1) SSE / monitor
                         self._publish_from_thread({"type": "tag", **ev.to_dict()})
 
-                        # 2) Forward al endpoint ingest (para que se ejecute la lógica real de user/item)
+                        # 2) Forward a ingest
                         if http_client is not None:
                             try:
-                                http_client.post(
+                                resp = http_client.post(
                                     ingest_url,
-                                    json={"epc": ev.epc, "antenna": ev.antenna, "rssi": ev.rssi},
+                                    headers=ingest_headers,
+                                    json={
+                                        "epc": ev.epc,
+                                        "antenna": ev.antenna,
+                                        "rssi": ev.rssi,
+                                        "reader_id": ev.reader_id,
+                                    },
+                                )
+
+                                log.debug(
+                                    "RFID ingest response | status=%s body=%s",
+                                    resp.status_code,
+                                    resp.text[:500],
                                 )
                             except Exception:
-                                pass
+                                log.exception(
+                                    "RFID forward to ingest failed | epc=%s antenna=%s",
+                                    ev.epc,
+                                    ev.antenna,
+                                )
 
                     if not got_any:
                         continue

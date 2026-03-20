@@ -34,6 +34,29 @@ async function readError(res: Response): Promise<string> {
   return msg;
 }
 
+function shouldAttachRfidKey(path: string): boolean {
+  return path.startsWith("/api/rfid/");
+}
+
+function buildHeaders(
+  path: string,
+  extra?: Record<string, string>
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    ...(extra ?? {}),
+  };
+
+  if (shouldAttachRfidKey(path)) {
+    const rfidApiKey = (import.meta.env.VITE_RFID_API_KEY as string | undefined)?.trim();
+
+    if (rfidApiKey) {
+      headers["X-RFID-KEY"] = rfidApiKey;
+    }
+  }
+
+  return headers;
+}
+
 export async function apiGet<T>(
   path: string,
   params?: Record<string, string | number | boolean | null | undefined>
@@ -48,7 +71,7 @@ export async function apiGet<T>(
   }
 
   const res = await fetch(url.toString(), {
-    headers: { Accept: "application/json" },
+    headers: buildHeaders(path, { Accept: "application/json" }),
   });
 
   if (!res.ok) {
@@ -56,27 +79,27 @@ export async function apiGet<T>(
     try {
       const j = await res.json();
       if (j?.detail) msg = j.detail;
-    } catch {}
+    } catch {
+      // ignore
+    }
     throw new Error(msg);
   }
 
   const data = (await res.json()) as T;
+  const anyData = data as any;
 
-const pageH = getNumberHeader(res.headers, "x-page", NaN);
-const pageSizeH = getNumberHeader(res.headers, "x-page-size", NaN);
-const totalH = getNumberHeader(res.headers, "x-total-count", NaN);
-const pagesH = getNumberHeader(res.headers, "x-total-pages", NaN);
+  const pageH = getNumberHeader(res.headers, "x-page", NaN);
+  const pageSizeH = getNumberHeader(res.headers, "x-page-size", NaN);
+  const totalH = getNumberHeader(res.headers, "x-total-count", NaN);
+  const pagesH = getNumberHeader(res.headers, "x-total-pages", NaN);
 
-// Si CORS no expone headers, caeremos aquí y tomamos del body si existe
-const anyData = data as any;
-
-const meta: PageMeta = {
-  page: Number.isFinite(pageH) ? pageH : (anyData?.page ?? 1),
-  pageSize: Number.isFinite(pageSizeH) ? pageSizeH : (anyData?.page_size ?? 50),
-  total: Number.isFinite(totalH) ? totalH : (anyData?.total ?? 0),
-  pages: Number.isFinite(pagesH) ? pagesH : (anyData?.pages ?? 0),
-  link: res.headers.get("link"),
-};
+  const meta: PageMeta = {
+    page: Number.isFinite(pageH) ? pageH : (anyData?.page ?? 1),
+    pageSize: Number.isFinite(pageSizeH) ? pageSizeH : (anyData?.page_size ?? 50),
+    total: Number.isFinite(totalH) ? totalH : (anyData?.total ?? 0),
+    pages: Number.isFinite(pagesH) ? pagesH : (anyData?.pages ?? 0),
+    link: res.headers.get("link"),
+  };
 
   return { data, meta };
 }
@@ -90,22 +113,23 @@ export async function apiJson<T>(
 
   const res = await fetch(url.toString(), {
     method,
-    headers: {
+    headers: buildHeaders(path, {
       Accept: "application/json",
       "Content-Type": "application/json",
-    },
+    }),
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
   if (!res.ok) throw new Error(await readError(res));
 
-  // DELETE puede devolver vacío según implementaciones futuras
   const text = await res.text();
   return (text ? JSON.parse(text) : ({} as T)) as T;
 }
 
 export async function getRfidSettings() {
-  const r = await fetch("/api/settings/rfid");
+  const r = await fetch("/api/settings/rfid", {
+    headers: { Accept: "application/json" },
+  });
   if (!r.ok) throw new Error("Failed to load settings");
   return r.json() as Promise<{ create_movements: boolean }>;
 }
@@ -129,10 +153,10 @@ export async function apiSend<TOut>(
 
   const res = await fetch(url.toString(), {
     method,
-    headers: {
+    headers: buildHeaders(path, {
       Accept: "application/json",
       "Content-Type": "application/json",
-    },
+    }),
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
@@ -141,11 +165,12 @@ export async function apiSend<TOut>(
     try {
       const j = await res.json();
       if (j?.detail) msg = j.detail;
-    } catch {}
+    } catch {
+      // ignore
+    }
     throw new Error(msg);
   }
 
-  // DELETE a veces devuelve vacío, tu API devuelve {"status":"ok"} pero por si acaso:
   if (res.status === 204) return undefined as unknown as TOut;
 
   try {
