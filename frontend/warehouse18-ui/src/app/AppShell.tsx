@@ -1,4 +1,5 @@
 import { ReactNode, useEffect, useMemo, useState } from "react";
+import { SystemHealthBadge } from "../ui/SystemHealthBadge";
 import { Link, useLocation } from "react-router-dom";
 import {
   LayoutDashboard,
@@ -65,11 +66,9 @@ export function AppShell(props: {
         {/* Sidebar */}
         <aside
           className={cn(
-            "sticky top-0 h-screen border-r border-blue-900 bg-[var(--blue-bg)] backdrop-blur",
+            "sticky top-0 hidden h-screen flex-col border-r border-blue-900 bg-[var(--blue-bg)] backdrop-blur md:flex",
             "transition-all duration-200",
-            collapsed ? "w-[92px]" : "w-[260px]",
-            // en pantallas pequeñas, no hagas que el sidebar se coma el mundo
-            "hidden md:block"
+            collapsed ? "w-[92px]" : "w-[260px]"
           )}
         >
           {/* Brand */}
@@ -149,6 +148,9 @@ export function AppShell(props: {
               })}
             </div>
           </nav>
+          <div className="mt-auto px-2 pb-3">
+            <SystemHealthBadge collapsed={collapsed} />
+          </div>
         </aside>
 
         {/* Main */}
