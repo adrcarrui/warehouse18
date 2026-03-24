@@ -118,7 +118,11 @@ def post_movement_direct(
             "location": resp.headers.get("Location"),
             "body_head": resp.text[:500],
         }
-        raise MySimError(status_code=resp.status_code, payload=payload)
+        raise MySimError(
+    message=f"mySim returned HTTP {resp.status_code}",
+    status_code=resp.status_code,
+    payload=payload,
+)
 
     try:
         return resp.json()

@@ -22,6 +22,7 @@ class RouteConfig:
     door_id: str
     zone_id: str
     zone_role: str
+    aisle_id: str
     logical_name: str
     location_id: int
     mysim_location_env: str | None = None
@@ -104,6 +105,7 @@ def _load_v2(raw: dict[str, Any]) -> AntennaTopology:
                 door_id=door_id,
                 zone_id=_parse_str(z.get("zone_id"), "zone_id").upper(),
                 zone_role=_parse_str(z.get("zone_role"), "zone_role").upper(),
+                aisle_id=_parse_str(z.get("aisle_id"), "aisle_id").upper(),
                 logical_name=str(z.get("logical_name") or f"{door_id}:{antenna}").strip(),
                 location_id=_parse_int(z.get("location_id"), "location_id"),
                 mysim_location_env=(

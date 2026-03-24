@@ -20,7 +20,7 @@
           "zone_id": "AISLE_1_A",
           "zone_role": "A",
           "logical_name": "Pasillo 1 lado izquierdo",
-          "location_id": 101,
+          "location_id": 18,
           "mysim_location_env": "MYSIM_RFID_LOC_AISLE_1",
           "enabled": true,
           "aisle_id": "AISLE_1"
@@ -30,7 +30,7 @@
           "zone_id": "AISLE_1_B",
           "zone_role": "B",
           "logical_name": "Pasillo 1 lado derecho",
-          "location_id": 101,
+          "location_id": 18,
           "mysim_location_env": "MYSIM_RFID_LOC_AISLE_1",
           "enabled": true,
           "aisle_id": "AISLE_1"
@@ -41,7 +41,7 @@
           "zone_id": "AISLE_2_A",
           "zone_role": "A",
           "logical_name": "Pasillo 2 lado izquierdo",
-          "location_id": 18,
+          "location_id": 20,
           "mysim_location_env": "MYSIM_RFID_LOC_AISLE_2",
           "enabled": true,
           "aisle_id": "AISLE_2"
@@ -51,7 +51,7 @@
           "zone_id": "AISLE_2_B",
           "zone_role": "B",
           "logical_name": "Pasillo 2 lado derecho",
-          "location_id": 18,
+          "location_id": 20,
           "mysim_location_env": "MYSIM_RFID_LOC_AISLE_2",
           "enabled": true,
           "aisle_id": "AISLE_2"
@@ -138,7 +138,7 @@
           "location_id": 106,
           "mysim_location_env": "MYSIM_RFID_LOC_AISLE_6",
           "enabled": false,
-          "group_id": "AISLE_6"
+          "aisle_id": "AISLE_6"
         }
       ]
     }

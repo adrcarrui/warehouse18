@@ -35,9 +35,10 @@ class RFIDEvent:
 
 @dataclass
 class DoorState:
-    state: str
     ts: float
     route: RouteConfig
+    state: str
+    current_aisle_id: str
     cooldown_until: float = 0.0
     seen_count_same_side: int = 1
 
@@ -206,6 +207,7 @@ def _cleanup_pending_crosses(db: Session, now_ts: float) -> None:
             },
         )
 
+
 def _find_recent_user_for_door(door_id: str, now_ts: float) -> int | None:
     data = _current_user_by_door.get(door_id)
     if not data:
@@ -215,11 +217,16 @@ def _find_recent_user_for_door(door_id: str, now_ts: float) -> int | None:
     return int(data["user_id"])
 
 
+def _build_state_name(route: RouteConfig) -> str:
+    return f"SEEN_{route.zone_role}" if route.zone_role in {"A", "B"} else "SEEN"
+
+
 def _start_or_refresh_state(door_id: str, epc: str, now_ts: float, route: RouteConfig) -> dict[str, Any]:
     state = DoorState(
-        state=f"SEEN_{route.zone_role}",
         ts=now_ts,
         route=route,
+        state=_build_state_name(route),
+        current_aisle_id=route.aisle_id,
         cooldown_until=0.0,
         seen_count_same_side=1,
     )
@@ -247,6 +254,7 @@ def _start_or_refresh_state(door_id: str, epc: str, now_ts: float, route: RouteC
         "route_mode": "door_engine",
         "door_id": route.door_id,
         "zone_role": route.zone_role,
+        "state": state.state,
         "ref_key": f"{door_id}:{epc}",
     }
 
@@ -620,9 +628,10 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
         )
         return result
 
-    if state.route.zone_role == route.zone_role:
+    if state.current_aisle_id == route.aisle_id:
         state.ts = now_ts
         state.route = route
+        state.state = _build_state_name(route)
         state.seen_count_same_side += 1
 
         log.info(
@@ -659,12 +668,15 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
             "seen_count_same_side": state.seen_count_same_side,
         }
 
-    if state.route.zone_role == "A" and route.zone_role == "B":
-        movement_code = os.getenv("WAREHOUSE18_RFID_MOVEMENT_A_TO_B", "GI").strip().upper()
-        route_label = "A->B"
-    elif state.route.zone_role == "B" and route.zone_role == "A":
-        movement_code = os.getenv("WAREHOUSE18_RFID_MOVEMENT_B_TO_A", "GR").strip().upper()
-        route_label = "B->A"
+    prev_aisle = state.current_aisle_id
+    curr_aisle = route.aisle_id
+
+    if prev_aisle == "AISLE_1" and curr_aisle == "AISLE_2":
+        movement_code = "GI"
+        route_label = "AISLE_1->AISLE_2"
+    elif prev_aisle == "AISLE_2" and curr_aisle == "AISLE_1":
+        movement_code = "GR"
+        route_label = "AISLE_2->AISLE_1"
     else:
         result = _start_or_refresh_state(route.door_id, epc, now_ts, route)
         log_rfid_event(
@@ -724,6 +736,7 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
         return result
 
     prev_zone_id = state.route.zone_id
+    previous_route = state.route
 
     log.info(
         "RFID cross accepted | door_id=%s epc=%s reader_id=%s route=%s movement_code=%s prev_zone=%s current_zone=%s",
@@ -754,9 +767,10 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
         },
     )
 
-    previous_route = state.route
     state.ts = now_ts
     state.route = route
+    state.state = _build_state_name(route)
+    state.current_aisle_id = route.aisle_id
     state.cooldown_until = now_ts + MOVE_COOLDOWN_S
     state.seen_count_same_side = 1
 
