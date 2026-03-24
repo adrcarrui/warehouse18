@@ -1,6 +1,6 @@
 {
-  "version": 2,
-  "updated_at": "2026-03-16",
+  "version": 3,
+  "updated_at": "2026-03-24",
   "readers": [
     {
       "reader_id": "reader-1",
@@ -12,26 +12,133 @@
   ],
   "doors": [
     {
-      "door_id": "door_demo_1",
+      "door_id": "almacen_pasillos",
       "reader_id": "reader-1",
       "zones": [
         {
-          "antenna": 2,
-          "zone_id": "DOOR_1_A",
+          "antenna": 0,
+          "zone_id": "AISLE_1_A",
           "zone_role": "A",
-          "logical_name": "Pasillo 1 interior",
-          "location_id": 18,
+          "logical_name": "Pasillo 1 lado izquierdo",
+          "location_id": 101,
           "mysim_location_env": "MYSIM_RFID_LOC_AISLE_1",
-          "enabled": true
+          "enabled": true,
+          "aisle_id": "AISLE_1"
         },
         {
-          "antenna": 4,
-          "zone_id": "DOOR_1_B",
+          "antenna": 1,
+          "zone_id": "AISLE_1_B",
           "zone_role": "B",
-          "logical_name": "Pasillo 1 exterior",
-          "location_id": 20,
+          "logical_name": "Pasillo 1 lado derecho",
+          "location_id": 101,
+          "mysim_location_env": "MYSIM_RFID_LOC_AISLE_1",
+          "enabled": true,
+          "aisle_id": "AISLE_1"
+        },
+
+        {
+          "antenna": 2,
+          "zone_id": "AISLE_2_A",
+          "zone_role": "A",
+          "logical_name": "Pasillo 2 lado izquierdo",
+          "location_id": 18,
           "mysim_location_env": "MYSIM_RFID_LOC_AISLE_2",
-          "enabled": true
+          "enabled": true,
+          "aisle_id": "AISLE_2"
+        },
+        {
+          "antenna": 3,
+          "zone_id": "AISLE_2_B",
+          "zone_role": "B",
+          "logical_name": "Pasillo 2 lado derecho",
+          "location_id": 18,
+          "mysim_location_env": "MYSIM_RFID_LOC_AISLE_2",
+          "enabled": true,
+          "aisle_id": "AISLE_2"
+        },
+
+        {
+          "antenna": 4,
+          "zone_id": "AISLE_3_A",
+          "zone_role": "A",
+          "logical_name": "Pasillo 3 lado izquierdo",
+          "location_id": 20,
+          "mysim_location_env": "MYSIM_RFID_LOC_AISLE_3",
+          "enabled": true,
+          "aisle_id": "AISLE_3"
+        },
+        {
+          "antenna": 5,
+          "zone_id": "AISLE_3_B",
+          "zone_role": "B",
+          "logical_name": "Pasillo 3 lado derecho",
+          "location_id": 20,
+          "mysim_location_env": "MYSIM_RFID_LOC_AISLE_3",
+          "enabled": true,
+          "aisle_id": "AISLE_3"
+        },
+
+        {
+          "antenna": 6,
+          "zone_id": "AISLE_4_A",
+          "zone_role": "A",
+          "logical_name": "Pasillo 4 lado izquierdo",
+          "location_id": 104,
+          "mysim_location_env": "MYSIM_RFID_LOC_AISLE_4",
+          "enabled": true,
+          "aisle_id": "AISLE_4"
+        },
+        {
+          "antenna": 7,
+          "zone_id": "AISLE_4_B",
+          "zone_role": "B",
+          "logical_name": "Pasillo 4 lado derecho",
+          "location_id": 104,
+          "mysim_location_env": "MYSIM_RFID_LOC_AISLE_4",
+          "enabled": true,
+          "aisle_id": "AISLE_4"
+        },
+
+        {
+          "antenna": 8,
+          "zone_id": "AISLE_5_A",
+          "zone_role": "A",
+          "logical_name": "Pasillo 5 lado izquierdo",
+          "location_id": 105,
+          "mysim_location_env": "MYSIM_RFID_LOC_AISLE_5",
+          "enabled": true,
+          "aisle_id": "AISLE_5"
+        },
+        {
+          "antenna": 9,
+          "zone_id": "AISLE_5_B",
+          "zone_role": "B",
+          "logical_name": "Pasillo 5 lado derecho",
+          "location_id": 105,
+          "mysim_location_env": "MYSIM_RFID_LOC_AISLE_5",
+          "enabled": true,
+          "aisle_id": "AISLE_5"
+        },
+
+        {
+          "antenna": 10,
+          "zone_id": "AISLE_6_A",
+          "zone_role": "A",
+          "logical_name": "Pasillo 6 lado izquierdo",
+          "location_id": 106,
+          "mysim_location_env": "MYSIM_RFID_LOC_AISLE_6",
+          "enabled": false,
+          "aisle_id": "AISLE_6"
+        },
+        {
+          "antenna": 11,
+          "zone_id": "AISLE_6_B",
+          "zone_role": "B",
+          "logical_name": "Pasillo 6 lado derecho",
+          "location_id": 106,
+          "mysim_location_env": "MYSIM_RFID_LOC_AISLE_6",
+          "enabled": false,
+          "group_id": "AISLE_6"
         }
       ]
     }
