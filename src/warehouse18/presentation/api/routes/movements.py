@@ -6,7 +6,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from warehouse18.application.rfid.event_log_service import log_rfid_event
-from warehouse18.application.rfid.movement_service import sync_pending_reviewed_movement
 from warehouse18.domain.models import Item, Location, Movement, MovementType, User
 from warehouse18.domain.models.rfid_event_log import RfidEventLog
 from warehouse18.infrastructure.db import get_db

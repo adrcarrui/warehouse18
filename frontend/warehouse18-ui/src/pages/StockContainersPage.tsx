@@ -135,10 +135,10 @@ export default function StockContainersPage() {
     setLookupLoading(true);
     setErr(null);
     try {
-      const itemsResp = await apiGet<PageOut<ItemOut>>("/api/items", { page: 1, page_size: 500 });
+      const itemsResp = await apiGet<PageOut<ItemOut>>("/api/items", { page: 1, page_size: 200 });
       const locsResp = await apiGet<PageOut<LocationOut>>("/api/locations", {
         page: 1,
-        page_size: 500,
+        page_size: 200,
         include_inactive: true,
       });
 

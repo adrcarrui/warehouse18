@@ -229,7 +229,7 @@ export default function RFIDReviewPage() {
       const { data } = await apiGet<PageOut<LocationOut>>("/api/locations", {
         include_inactive: true,
         page: 1,
-        page_size: 500,
+        page_size: 200,
       });
       const next: Record<number, LocationOut> = {};
       for (const row of data.items) next[row.id] = row;

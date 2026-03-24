@@ -1,6 +1,7 @@
 from typing import List
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 ENV_FILE = BASE_DIR.parent / ".env"
@@ -21,7 +22,11 @@ class Settings(BaseSettings):
     rfid_log_level: str = "WARNING"
 
     # Seguridad básica RFID
-    rfid_api_key: str = ""
+    rfid_api_key: str = Field(default="", validation_alias="WAREHOUSE18_RFID_API_KEY")
+    rfid_internal_enable: bool = Field(default=True, validation_alias="WAREHOUSE18_RFID_INTERNAL_ENABLE")
+    rfid_ingest_url: str = Field(default="http://127.0.0.1:8000/api/rfid/ingest", validation_alias="WAREHOUSE18_RFID_INGEST_URL")
+    rfid_forward_to_ingest: bool = Field(default=True, validation_alias="WAREHOUSE18_RFID_FORWARD_TO_INGEST")
+    rfid_8a_frame_hex: str = Field(default="", validation_alias="WAREHOUSE18_RFID_8A_FRAME_HEX")
     rfid_emit_enable: bool = False
 
     model_config = SettingsConfigDict(
@@ -37,3 +42,8 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+print("DBG RFID API KEY SETTINGS =", repr(settings.rfid_api_key))
+print("DBG BASE_DIR =", BASE_DIR)
+print("DBG ENV FILE =", BASE_DIR / ".env")
+print("DBG ENV EXISTS =", (BASE_DIR / ".env").exists())
+print("DBG RFID API KEY SETTINGS =", repr(settings.rfid_api_key))

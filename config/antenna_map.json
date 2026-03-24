@@ -16,7 +16,7 @@
       "reader_id": "reader-1",
       "zones": [
         {
-          "antenna": 1,
+          "antenna": 2,
           "zone_id": "DOOR_1_A",
           "zone_role": "A",
           "logical_name": "Pasillo 1 interior",
@@ -25,7 +25,7 @@
           "enabled": true
         },
         {
-          "antenna": 2,
+          "antenna": 4,
           "zone_id": "DOOR_1_B",
           "zone_role": "B",
           "logical_name": "Pasillo 1 exterior",
