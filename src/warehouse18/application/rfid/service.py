@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dotenv import load_dotenv
+
 import asyncio
 import inspect
 import logging
@@ -17,13 +18,13 @@ import httpx
 from warehouse18.config import settings
 from warehouse18.domain.rfid import RFIDReadEvent, ReaderStatusEvent
 from warehouse18.application.rfid.epc96 import EPCSchema, load_epc_schema, parse_epc96
-from warehouse18.infrastructure.rfid.parser import decode_frame, try_parse_tag_from_inventory
-from warehouse18.infrastructure.rfid.tcp_client import RFIDReaderTCP, TCPConnectionConfig
+from warehouse18.infrastructure.rfid.low_level_reader import LowLevelRFIDReader
 
 log = logging.getLogger("warehouse18.rfid.service")
 log.warning("RFID MODULE LOADED FROM: %s", __file__)
 
 Publisher = Callable[[dict[str, Any]], Any]
+
 REPO_ROOT = Path(__file__).resolve().parents[5]
 load_dotenv(REPO_ROOT / ".env")
 
@@ -33,14 +34,14 @@ class RFIDServiceConfig:
     reader_id: str = "reader-1"
     host: str = "127.0.0.1"
     port: int = 4001
-    ants: list[int] | None = None  # 1..16
+    ants: list[int] | None = None
     repeat: int = 0x01
     reconnect_seconds: float = 2.0
     inventory_cmd: int = 0x8A
 
     def __post_init__(self):
         if self.ants is None:
-            object.__setattr__(self, "ants", list(range(1, 3)))
+            object.__setattr__(self, "ants", list(range(1, 17)))
 
 
 class RFIDReaderService:
@@ -54,7 +55,7 @@ class RFIDReaderService:
         loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
         log.warning("RFID CLASS SOURCE FILE = %s", inspect.getsourcefile(self.__class__))
-        log.warning("RFID SERVICE VERSION = EPC_FILTER_SAFE")
+        log.warning("RFID SERVICE VERSION = LOW_LEVEL_READER_16_ANTS")
         log.warning("RFID SERVICE CLASS FILE = %s", __file__)
 
         self.cfg = cfg
@@ -62,12 +63,11 @@ class RFIDReaderService:
         self._loop = loop
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._reader: Optional[RFIDReaderTCP] = None
+        self._reader: Optional[LowLevelRFIDReader] = None
 
         root = Path(__file__).resolve().parents[4]
         schema_path = root / "config" / "epc_schema.json"
         self._epc_schema: EPCSchema | None = None
-
         try:
             self._epc_schema = load_epc_schema(schema_path)
             log.info("EPC schema loaded | path=%s", schema_path)
@@ -105,7 +105,7 @@ class RFIDReaderService:
                 else:
                     asyncio.run_coroutine_threadsafe(out, self._loop)
         except Exception:
-            pass
+            log.exception("RFID publish failed")
 
     def _status(self, status: str, message: str | None = None) -> None:
         ev = ReaderStatusEvent(
@@ -126,11 +126,11 @@ class RFIDReaderService:
                 log.exception("RFID loop crashed, will retry in %.1fs", backoff)
                 self._status("error", str(e))
                 time.sleep(backoff)
+
         self._status("disconnected", "stopped")
 
     def _quick_reject_epc(self, epc: str) -> str | None:
         epc = (epc or "").strip().upper()
-
         if not epc:
             return "empty"
         if len(epc) != 24:
@@ -163,32 +163,28 @@ class RFIDReaderService:
             return False
 
     def _connect_and_loop(self) -> None:
-        log.warning("ENTERING _connect_and_loop WITH EPC FILTER SAFE")
+        log.warning("ENTERING _connect_and_loop WITH LOW_LEVEL_READER_16_ANTS")
 
-        inventory_every_s = float(os.getenv("WAREHOUSE18_RFID_INVENTORY_EVERY_S", "0.5"))
-        last_inventory_ts = 0.0
-
-        frame_hex = settings.rfid_8a_frame_hex.strip().replace(" ", "")
-        if not frame_hex:
-            raise RuntimeError("Missing WAREHOUSE18_RFID_8A_FRAME_HEX in .env")
-        inv_frame = bytes.fromhex(frame_hex)
-
-        self._reader = RFIDReaderTCP(TCPConnectionConfig(host=self.cfg.host, port=self.cfg.port))
+        self._reader = LowLevelRFIDReader(
+            host=self.cfg.host,
+            port=self.cfg.port,
+            addr=0x01,
+            recv_timeout=float(os.getenv("WAREHOUSE18_RFID_SOCK_TIMEOUT_S", "0.20")),
+            read_window_s=float(os.getenv("WAREHOUSE18_RFID_RECV_WINDOW_S", "0.35")),
+            step_delay_s=float(os.getenv("WAREHOUSE18_RFID_STEP_DELAY_S", "0.03")),
+            loop_sleep_s=float(os.getenv("WAREHOUSE18_RFID_INVENTORY_EVERY_S", "0.12")),
+        )
         self._reader.connect()
+
         log.info("RFID TCP connected")
         self._status("connected", f"{self.cfg.host}:{self.cfg.port}")
 
-        log.info("Sending inventory RAW frame=%s", frame_hex.upper())
-        self._reader.send_raw(inv_frame)
-
-        # Activado por defecto para no dejar el flujo medio desconectado
         forward_to_ingest = os.getenv("WAREHOUSE18_RFID_FORWARD_TO_INGEST", "1") == "1"
         ingest_url = os.getenv("WAREHOUSE18_RFID_INGEST_URL", "http://127.0.0.1:8000/api/rfid/ingest")
         ingest_api_key = (settings.rfid_api_key or "").strip()
 
         http_client = httpx.Client(timeout=10.0) if forward_to_ingest else None
         ingest_headers: dict[str, str] = {}
-
         if ingest_api_key:
             ingest_headers["X-RFID-KEY"] = ingest_api_key
 
@@ -198,51 +194,33 @@ class RFIDReaderService:
                 ingest_url,
                 bool(ingest_api_key),
             )
-
-        log.warning(
-            "RFID ingest config | forward=%s url=%s api_key_len=%s",
-            forward_to_ingest,
-            ingest_url,
-            len(ingest_api_key),
-        )
+            log.warning(
+                "RFID ingest config | forward=%s url=%s api_key_len=%s",
+                forward_to_ingest,
+                ingest_url,
+                len(ingest_api_key),
+            )
 
         try:
             while not self._stop.is_set():
                 try:
-                    now_ts = time.time()
-                    if (now_ts - last_inventory_ts) >= inventory_every_s:
-                        self._reader.send_raw(inv_frame)
-                        last_inventory_ts = now_ts
-
                     got_any = False
-                    if int(time.time()) % 2 == 0:
-                        log.debug("RFID loop alive, waiting frames…")
 
-                    for raw in self._reader.recv_frames(window_s=3.0):
+                    for tag in self._reader.read_cycle():
                         got_any = True
-                        log.debug("RFID frame len=%s raw=%s", len(raw), raw.hex().upper())
-
-                        fr = decode_frame(raw)
-                        log.debug(
-                            "RFID decoded frame cmd=0x%02X data_len=%s data=%s",
-                            fr.cmd,
-                            len(fr.data),
-                            fr.data.hex().upper(),
-                        )
-
-                        tag = try_parse_tag_from_inventory(fr)
-                        if not tag:
-                            log.debug(
-                                "RFID frame ignored: cmd=0x%02X data=%s",
-                                fr.cmd,
-                                fr.data.hex().upper(),
-                            )
-                            continue
 
                         epc = (tag.epc or "").strip().upper()
                         antenna = int(tag.antenna)
 
-                        log.debug("TAG leído EPC=%s len=%s antenna=%s", epc, len(epc), antenna)
+                        log.debug(
+                            "RFID low-level read | epc=%s antenna=%s step=0x%02X ant_in_block=%s freq_ant=0x%02X raw=%s",
+                            epc,
+                            antenna,
+                            tag.step_val,
+                            tag.ant_in_block,
+                            tag.freq_ant,
+                            tag.raw.hex().upper(),
+                        )
 
                         quick_reason = self._quick_reject_epc(epc)
                         if quick_reason is not None:
@@ -285,7 +263,7 @@ class RFIDReaderService:
                             rssi=float(tag.rssi_raw) if tag.rssi_raw is not None else None,
                             seen_at=tag.seen_at,
                             protocol="DDCT",
-                            raw=raw.hex().upper(),
+                            raw=tag.raw.hex().upper(),
                         )
 
                         # 1) SSE / monitor
@@ -324,10 +302,13 @@ class RFIDReaderService:
                 except (ConnectionError, OSError) as e:
                     self._status("disconnected", str(e))
                     try:
-                        self._reader.close()
+                        if self._reader:
+                            self._reader.close()
                     except Exception:
                         pass
                     raise
         finally:
             if http_client is not None:
                 http_client.close()
+            if self._reader is not None:
+                self._reader.close()

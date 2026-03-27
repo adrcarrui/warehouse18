@@ -216,6 +216,37 @@ def _find_recent_user_for_door(door_id: str, now_ts: float) -> int | None:
         return None
     return int(data["user_id"])
 
+def _is_entrance(route: RouteConfig) -> bool:
+    return route.aisle_id == "ENTRANCE"
+
+
+def _is_aisle(route: RouteConfig) -> bool:
+    return route.aisle_id.startswith("AISLE_")
+
+
+def _resolve_movement_from_routes(
+    previous_route: RouteConfig,
+    current_route: RouteConfig,
+) -> tuple[str, str] | None:
+    prev_aisle = previous_route.aisle_id
+    curr_aisle = current_route.aisle_id
+
+    if prev_aisle == curr_aisle:
+        return None
+
+    # Entrada -> Pasillo = Good Receipt
+    if _is_entrance(previous_route) and _is_aisle(current_route):
+        return "GR", f"{prev_aisle}->{curr_aisle}"
+
+    # Pasillo -> Entrada = Good Issue
+    if _is_aisle(previous_route) and _is_entrance(current_route):
+        return "GI", f"{prev_aisle}->{curr_aisle}"
+
+    # Pasillo -> Pasillo = Good Transfer
+    if _is_aisle(previous_route) and _is_aisle(current_route):
+        return "GT", f"{prev_aisle}->{curr_aisle}"
+
+    return None
 
 def _build_state_name(route: RouteConfig) -> str:
     return f"SEEN_{route.zone_role}" if route.zone_role in {"A", "B"} else "SEEN"
@@ -668,16 +699,8 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
             "seen_count_same_side": state.seen_count_same_side,
         }
 
-    prev_aisle = state.current_aisle_id
-    curr_aisle = route.aisle_id
-
-    if prev_aisle == "AISLE_1" and curr_aisle == "AISLE_2":
-        movement_code = "GI"
-        route_label = "AISLE_1->AISLE_2"
-    elif prev_aisle == "AISLE_2" and curr_aisle == "AISLE_1":
-        movement_code = "GR"
-        route_label = "AISLE_2->AISLE_1"
-    else:
+    movement_resolution = _resolve_movement_from_routes(state.route, route)
+    if movement_resolution is None:
         result = _start_or_refresh_state(route.door_id, epc, now_ts, route)
         log_rfid_event(
             db,
@@ -692,6 +715,8 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
             payload_json=result,
         )
         return result
+
+    movement_code, route_label = movement_resolution
 
     if state.seen_count_same_side < MIN_SEEN_COUNT_TO_CONFIRM:
         log.info(
