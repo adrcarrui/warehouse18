@@ -15,13 +15,28 @@ from warehouse18.application.rfid.event_log_service import log_rfid_event
 from warehouse18.domain.models.movement import Movement
 from warehouse18.domain.models.movement_type import MovementType as LocalMovementType
 from warehouse18.domain.models.rfid_event_log import RfidEventLog
+from warehouse18.domain.models.location import Location
 from warehouse18.domain.models.user import User
 from warehouse18.infrastructure.integrations.mySim import MySimClient, MySimConfig
 from warehouse18.infrastructure.integrations.mySim.adapter import MySimAdapter
 from warehouse18.infrastructure.integrations.mySim.errors import MySimError
 
+
 log = logging.getLogger("warehouse18.rfid")
 
+def resolve_local_location_id_by_mysim_code(db: Session, mysim_location_id: int | str) -> int | None:
+    code = str(mysim_location_id).strip()
+
+    row = (
+        db.query(Location.id)
+        .filter(Location.code == code)
+        .first()
+    )
+
+    if row is None:
+        return None
+
+    return int(row[0])
 
 def mysim_client_and_adapter() -> tuple[MySimClient, MySimAdapter]:
     cfg = MySimConfig.from_env()
@@ -171,10 +186,18 @@ def create_local_movement(
     previous_route: Any,
     local_user_id: int,
     mysim_user_id: int,
+    from_location_id_local: int | None,
+    to_location_id_local: int | None,
 ) -> tuple[bool, dict[str, Any] | str]:
     mt = movement_type_by_code(db, movement_code)
     if mt is None:
         return False, f"movement_type_not_found:{movement_code}"
+
+    if from_location_id_local is None:
+        return False, f"from_location_not_found_local:{previous_route.location_id}"
+
+    if to_location_id_local is None:
+        return False, f"to_location_not_found_local:{current_route.location_id}"
 
     item_key = build_item_key_from_epc(epc, epc_schema_path)
 
@@ -190,8 +213,8 @@ def create_local_movement(
         movement_type_id=mt.id,
         item_id=None,
         quantity=None,
-        from_location_id=previous_route.location_id,
-        to_location_id=current_route.location_id,
+        from_location_id=from_location_id_local,
+        to_location_id=to_location_id_local,
         reference_type=None,
         reference_id=None,
         user_id=local_user_id,
@@ -208,23 +231,32 @@ def create_local_movement(
     )
 
     db.add(mv)
-    db.flush()      # <- IMPORTANTE: obtener mv.id sin commit global todavía
+    db.flush()
     db.refresh(mv)
 
     payload = {
         "movement_id": int(mv.id),
         "item_key": item_key,
         "movement_code": movement_code,
+        "from_location_id_local": from_location_id_local,
+        "to_location_id_local": to_location_id_local,
+        "from_location_id_mysim": previous_route.location_id,
+        "to_location_id_mysim": current_route.location_id,
     }
 
     log.info(
-        "RFID local movement created (pending review) | movement_id=%s code=%s epc=%s item_key=%s local_user_id=%s mysim_user_id=%s",
+        "RFID local movement created (pending review) | movement_id=%s code=%s epc=%s item_key=%s "
+        "local_user_id=%s mysim_user_id=%s from_local=%s to_local=%s from_mysim=%s to_mysim=%s",
         mv.id,
         movement_code,
         epc,
         item_key,
         local_user_id,
         mysim_user_id,
+        from_location_id_local,
+        to_location_id_local,
+        previous_route.location_id,
+        current_route.location_id,
     )
 
     return True, payload
@@ -399,6 +431,13 @@ def finalize_movement_for_user(
         }
 
     try:
+        from_location_id_local = resolve_local_location_id_by_mysim_code(
+            db, previous_route.location_id
+        )
+        to_location_id_local = resolve_local_location_id_by_mysim_code(
+            db, current_route.location_id
+        )
+
         ok, local_result = create_local_movement(
             db,
             movement_code=movement_code,
@@ -410,8 +449,9 @@ def finalize_movement_for_user(
             previous_route=previous_route,
             local_user_id=local_user.id,
             mysim_user_id=mysim_user_id,
+            from_location_id_local=from_location_id_local,
+            to_location_id_local=to_location_id_local,
         )
-
         if not ok:
             db.rollback()
             return {

@@ -62,6 +62,7 @@ export async function apiGet<T>(
   params?: Record<string, string | number | boolean | null | undefined>
 ): Promise<{ data: T; meta: PageMeta }> {
   const url = new URL(path, window.location.origin);
+  console.log("apiGet path =", path, "url =", url.toString());
 
   if (params) {
     for (const [k, v] of Object.entries(params)) {

@@ -16,6 +16,7 @@ type MovementOut = {
   from_location_id?: number | null;
   to_location_id?: number | null;
   user_id?: number | null;
+  user_name?: string | null;
   created_at: string;
   notes?: string | null;
   mysim_movement_id?: string | null;
@@ -25,6 +26,15 @@ type MovementTypeOut = {
   id: number;
   code: string;
   name: string;
+};
+
+type LocationOut = {
+  id: number;
+  code: string;
+  name: string;
+  type: string;
+  parent_id?: number | null;
+  is_active: boolean;
 };
 
 function fmtDate(v?: string | null) {
@@ -50,6 +60,40 @@ function partToText(m: MovementOut) {
   return m.item_key || (m.item_id != null ? String(m.item_id) : "");
 }
 
+function locationLabel(locationId?: number | null, locationMap?: Record<number, LocationOut>) {
+  if (locationId == null) return "";
+  const loc = locationMap?.[locationId];
+  return loc?.name || String(locationId);
+}
+
+function movementTypeLabel(mt?: MovementTypeOut) {
+  if (!mt) return "";
+
+  const code = (mt.code || "").toUpperCase();
+
+  if (code === "GI") return "Good Issue";
+  if (code === "GR") return "Good Receipt";
+  if (code === "GT") return "Good Transfer";
+
+  return mt.name || mt.code;
+}
+
+function userLabel(row: MovementOut) {
+  if (row.user_name && row.user_name.trim() !== "") return row.user_name;
+  if (row.user_id != null) return String(row.user_id);
+  return "";
+}
+
+function movementTypeClassName(mt?: MovementTypeOut) {
+  const code = (mt?.code || "").toUpperCase();
+
+  if (code === "GI") return "text-red-600 font-semibold";
+  if (code === "GR") return "text-green-600 font-semibold";
+  if (code === "GT") return "text-blue-600 font-semibold";
+
+  return "text-black";
+}
+
 export default function MovementsPage() {
   const [idFilter, setIdFilter] = useState("");
   const [movementTypeFilter, setMovementTypeFilter] = useState("");
@@ -61,6 +105,7 @@ export default function MovementsPage() {
   const [mysimMovementIdFilter, setMysimMovementIdFilter] = useState("");
 
   const [mtById, setMtById] = useState<Record<number, MovementTypeOut>>({});
+  const [locationMap, setLocationMap] = useState<Record<number, LocationOut>>({});
 
   const [page, setPage] = useState(1);
   const [pageSize] = useState(25);
@@ -106,6 +151,37 @@ export default function MovementsPage() {
     }
   }
 
+  async function loadAllLocations() {
+    try {
+      const pageSize = 200;
+      let currentPage = 1;
+      let totalPages = 1;
+      const map: Record<number, LocationOut> = {};
+
+      while (currentPage <= totalPages) {
+        const { data, meta } = await apiGet<PageOut<LocationOut>>("/api/locations", {
+          include_inactive: true,
+          page: currentPage,
+          page_size: pageSize,
+        });
+
+        for (const loc of data.items) {
+          map[loc.id] = loc;
+        }
+
+        totalPages = meta.pages && meta.pages > 0
+          ? meta.pages
+          : Math.max(1, Math.ceil((meta.total || 0) / (meta.pageSize || pageSize)));
+
+        currentPage += 1;
+      }
+
+      setLocationMap(map);
+    } catch {
+      setLocationMap({});
+    }
+  }
+
   async function load(p: number) {
     setLoading(true);
     setErr(null);
@@ -116,9 +192,13 @@ export default function MovementsPage() {
           const search = movementTypeFilter.trim().toLowerCase();
           if (!search) return undefined;
 
-          const found = Object.values(mtById).find((mt) =>
-            mt.name.toLowerCase().includes(search)
-          );
+          const found = Object.values(mtById).find((mt) => {
+            const code = (mt.code || "").toLowerCase();
+            const label = movementTypeLabel(mt).toLowerCase();
+            const rawName = (mt.name || "").toLowerCase();
+
+            return code.includes(search) || label.includes(search) || rawName.includes(search);
+          });
 
           return found?.id;
         })(),
@@ -142,6 +222,7 @@ export default function MovementsPage() {
   useEffect(() => {
     (async () => {
       await loadMovementTypes();
+      await loadAllLocations();
       await load(1);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -192,6 +273,8 @@ export default function MovementsPage() {
     load(1);
   }
 
+  const FILTER_ROW_TOP = "32px";
+
   return (
     <AppShell
       title="Movements"
@@ -212,103 +295,132 @@ export default function MovementsPage() {
         )}
 
         <div className="rounded-xl border border-zinc-200 bg-white">
-          <div className="flex max-h-[750px] flex-col">
-            <div className="relative flex-1 overflow-auto bg-white">
-              <table className="min-w-full border-separate border-spacing-0">
-                <thead className="bg-zinc-50">
-                  <tr>
-                    {[
-                      "ID / MySim",
-                      "Type",
-                      "Part",
-                      "Qty",
-                      "FromId",
-                      "ToId",
-                      "UserId",
-                      "Created",
-                      "Notes",
-                    ].map((h) => (
-                      <th
-                        key={h}
-                        className="whitespace-nowrap border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-left text-xs font-semibold text-zinc-700"
-                      >
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-
-                  <tr>
-                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
-                      <Input
-                        value={idFilter}
-                        onChange={(e) => setIdFilter(e.target.value)}
-                        onKeyDown={onFilterKeyDown}
-                        placeholder="id…"
-                      />
+          <div className="relative max-h-[750px] overflow-auto bg-white">
+            <table className="min-w-full border-separate border-spacing-0 [table-layout:fixed]">
+              <thead>
+                <tr>
+                  {[
+                    "ID / MySim",
+                    "Type",
+                    "Part",
+                    "Qty",
+                    "From",
+                    "To",
+                    "DoneBy",
+                    "Created",
+                    "Notes",
+                  ].map((h) => (
+                    <th
+                      key={h}
+                      className="sticky top-0 z-30 whitespace-nowrap border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-left text-xs font-semibold text-zinc-700"
+                    >
+                      {h}
                     </th>
+                  ))}
+                </tr>
 
-                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
-                      <Input
-                        value={movementTypeFilter}
-                        onChange={(e) => setMovementTypeFilter(e.target.value)}
-                        onKeyDown={onFilterKeyDown}
-                        placeholder="movement type…"
-                      />
-                    </th>
+                <tr>
+                  <th
+                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
+                    style={{ top: FILTER_ROW_TOP }}
+                  >
+                    <Input
+                      value={idFilter}
+                      onChange={(e) => setIdFilter(e.target.value)}
+                      onKeyDown={onFilterKeyDown}
+                      placeholder="id…"
+                    />
+                  </th>
 
-                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
-                      <Input
-                        value={partFilter}
-                        onChange={(e) => setPartFilter(e.target.value)}
-                        onKeyDown={onFilterKeyDown}
-                        placeholder="part…"
-                      />
-                    </th>
+                  <th
+                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
+                    style={{ top: FILTER_ROW_TOP }}
+                  >
+                    <Input
+                      value={movementTypeFilter}
+                      onChange={(e) => setMovementTypeFilter(e.target.value)}
+                      onKeyDown={onFilterKeyDown}
+                      placeholder="movement type…"
+                    />
+                  </th>
 
-                    <th className="border-b border-zinc-200 bg-white px-3 py-2" />
+                  <th
+                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
+                    style={{ top: FILTER_ROW_TOP }}
+                  >
+                    <Input
+                      value={partFilter}
+                      onChange={(e) => setPartFilter(e.target.value)}
+                      onKeyDown={onFilterKeyDown}
+                      placeholder="part…"
+                    />
+                  </th>
 
-                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
-                      <Input
-                        value={fromIdFilter}
-                        onChange={(e) => setFromIdFilter(e.target.value)}
-                        onKeyDown={onFilterKeyDown}
-                        placeholder="from_location_id…"
-                      />
-                    </th>
+                  <th
+                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
+                    style={{ top: FILTER_ROW_TOP }}
+                  />
 
-                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
-                      <Input
-                        value={toIdFilter}
-                        onChange={(e) => setToIdFilter(e.target.value)}
-                        onKeyDown={onFilterKeyDown}
-                        placeholder="to_location_id…"
-                      />
-                    </th>
+                  <th
+                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
+                    style={{ top: FILTER_ROW_TOP }}
+                  >
+                    <Input
+                      value={fromIdFilter}
+                      onChange={(e) => setFromIdFilter(e.target.value)}
+                      onKeyDown={onFilterKeyDown}
+                      placeholder="from_location_id…"
+                    />
+                  </th>
 
-                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
-                      <Input
-                        value={userIdFilter}
-                        onChange={(e) => setUserIdFilter(e.target.value)}
-                        onKeyDown={onFilterKeyDown}
-                        placeholder="user_id…"
-                      />
-                    </th>
+                  <th
+                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
+                    style={{ top: FILTER_ROW_TOP }}
+                  >
+                    <Input
+                      value={toIdFilter}
+                      onChange={(e) => setToIdFilter(e.target.value)}
+                      onKeyDown={onFilterKeyDown}
+                      placeholder="to_location_id…"
+                    />
+                  </th>
 
-                    <th className="border-b border-zinc-200 bg-white px-3 py-2" />
+                  <th
+                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
+                    style={{ top: FILTER_ROW_TOP }}
+                  >
+                    <Input
+                      value={userIdFilter}
+                      onChange={(e) => setUserIdFilter(e.target.value)}
+                      onKeyDown={onFilterKeyDown}
+                      placeholder="user_id…"
+                    />
+                  </th>
 
-                    <th className="border-b border-zinc-200 bg-white px-3 py-2">
-                      <Input
-                        value={notesFilter}
-                        onChange={(e) => setNotesFilter(e.target.value)}
-                        onKeyDown={onFilterKeyDown}
-                        placeholder="notes / mysim id…"
-                      />
-                    </th>
-                  </tr>
-                </thead>
+                  <th
+                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
+                    style={{ top: FILTER_ROW_TOP }}
+                  />
 
-                <tbody>
-                  {rows.map((m) => (
+                  <th
+                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
+                    style={{ top: FILTER_ROW_TOP }}
+                  >
+                    <Input
+                      value={notesFilter}
+                      onChange={(e) => setNotesFilter(e.target.value)}
+                      onKeyDown={onFilterKeyDown}
+                      placeholder="notes / mysim id…"
+                    />
+                  </th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {rows.map((m) => {
+                  const mt = mtById[m.movement_type_id];
+
+                  return (
                     <tr key={m.id} className="hover:bg-zinc-50">
                       <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
                         <div className="font-medium tabular-nums">{m.id}</div>
@@ -317,8 +429,10 @@ export default function MovementsPage() {
                         ) : null}
                       </td>
 
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                        {mtById[m.movement_type_id]?.name ?? `#${m.movement_type_id}`}
+                      <td
+                        className={`border-b border-zinc-100 px-3 py-2 text-sm ${movementTypeClassName(mt)}`}
+                      >
+                        {mt ? movementTypeLabel(mt) : `#${m.movement_type_id}`}
                       </td>
 
                       <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
@@ -329,16 +443,16 @@ export default function MovementsPage() {
                         {qtyToText(m.quantity)}
                       </td>
 
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">
-                        {m.from_location_id ?? ""}
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
+                        {locationLabel(m.from_location_id, locationMap)}
+                      </td>
+
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
+                        {locationLabel(m.to_location_id, locationMap)}
                       </td>
 
                       <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">
-                        {m.to_location_id ?? ""}
-                      </td>
-
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">
-                        {m.user_id ?? ""}
+                        {userLabel(m)}
                       </td>
 
                       <td className="border-b border-zinc-100 px-3 py-2 text-sm text-zinc-600">
@@ -349,59 +463,57 @@ export default function MovementsPage() {
                         {m.notes ?? ""}
                       </td>
                     </tr>
-                  ))}
+                  );
+                })}
 
-                  {!loading && rows.length === 0 && (
-                    <tr>
-                      <td colSpan={9} className="px-3 py-6 text-sm text-zinc-600">
-                        No results
-                      </td>
-                    </tr>
-                  )}
+                {!loading && rows.length === 0 && (
+                  <tr>
+                    <td colSpan={9} className="px-3 py-6 text-sm text-zinc-600">
+                      No results
+                    </td>
+                  </tr>
+                )}
 
-                  {loading && (
-                    <tr>
-                      <td colSpan={9} className="px-3 py-6 text-sm text-zinc-600">
-                        Loading…
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="border-t border-zinc-200 bg-white px-3 py-2">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <div className="text-sm text-zinc-600">
-                  Total <span className="font-semibold text-zinc-900">{meta.total}</span> • Page{" "}
-                  <span className="font-semibold text-zinc-900">{meta.page}</span> /{" "}
-                  <span className="font-semibold text-zinc-900">{pages}</span> • Size{" "}
-                  <span className="font-semibold text-zinc-900">{meta.pageSize}</span>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <Button
-                    type="button"
-                    onClick={() => load(meta.page - 1)}
-                    disabled={loading || meta.page <= 1}
-                  >
-                    Prev
-                  </Button>
-                  <Button
-                    type="button"
-                    onClick={() => load(meta.page + 1)}
-                    disabled={loading || meta.page >= pages}
-                  >
-                    Next
-                  </Button>
-                </div>
-              </div>
-            </div>
-
-            <div className="px-3 pb-2">
-              <Badge>{rows.length} rows</Badge>
-            </div>
+                {loading && (
+                  <tr>
+                    <td colSpan={9} className="px-3 py-6 text-sm text-zinc-600">
+                      Loading…
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
+        </div>
+
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-sm text-zinc-600">
+            Total <span className="font-semibold text-zinc-900">{meta.total}</span> • Page{" "}
+            <span className="font-semibold text-zinc-900">{meta.page}</span> /{" "}
+            <span className="font-semibold text-zinc-900">{pages}</span> • Size{" "}
+            <span className="font-semibold text-zinc-900">{meta.pageSize}</span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              onClick={() => load(meta.page - 1)}
+              disabled={loading || meta.page <= 1}
+            >
+              Prev
+            </Button>
+            <Button
+              type="button"
+              onClick={() => load(meta.page + 1)}
+              disabled={loading || meta.page >= pages}
+            >
+              Next
+            </Button>
+          </div>
+        </div>
+
+        <div>
+          <Badge>{rows.length} rows</Badge>
         </div>
       </div>
     </AppShell>

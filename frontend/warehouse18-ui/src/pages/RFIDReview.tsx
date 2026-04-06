@@ -15,6 +15,7 @@ type MovementOut = {
   reference_type?: string | null;
   reference_id?: number | null;
   user_id?: number | null;
+  user_name?: string | null;
   created_at: string;
   notes?: string | null;
   item_key?: string | null;
@@ -27,6 +28,13 @@ type MovementOut = {
   mysim_synced_at?: string | null;
   mysim_sync_error?: string | null;
   mysim_movement_id?: string | null;
+};
+
+type MovementTypeOut = {
+  id: number;
+  code: string;
+  name: string;
+  stock_sign?: number | null;
 };
 
 type MovementReviewIn = {
@@ -103,6 +111,7 @@ function locationLabel(locationId?: number | null, locationMap?: Record<number, 
 }
 
 function doneByLabel(row: MovementOut) {
+  if (row.user_name && row.user_name.trim() !== "") return row.user_name;
   if (row.mysim_user_id != null) return String(row.mysim_user_id);
   if (row.user_id != null) return String(row.user_id);
   return "";
@@ -119,6 +128,36 @@ function sourceLabel(row: MovementOut, locationMap: Record<number, LocationOut>)
 
 function destinationLabel(row: MovementOut, locationMap: Record<number, LocationOut>) {
   return locationLabel(row.to_location_id, locationMap);
+}
+
+function movementTypeLabel(
+  movementTypeId: number,
+  movementTypeMap: Record<number, MovementTypeOut>
+) {
+  const mt = movementTypeMap[movementTypeId];
+  if (!mt) return String(movementTypeId);
+
+  const code = (mt.code || "").toUpperCase();
+
+  if (code === "GI") return "Good Issue";
+  if (code === "GR") return "Good Receipt";
+  if (code === "GT") return "Good Transfer";
+
+  return mt.name || mt.code || String(movementTypeId);
+}
+
+function movementTypeClassName(
+  movementTypeId: number,
+  movementTypeMap: Record<number, MovementTypeOut>
+) {
+  const mt = movementTypeMap[movementTypeId];
+  const code = (mt?.code || "").toUpperCase();
+
+  if (code === "GI") return "text-red-600 font-semibold";
+  if (code === "GR") return "text-green-600 font-semibold";
+  if (code === "GT") return "text-blue-600 font-semibold";
+
+  return "text-black";
 }
 
 type LocationAutocompleteProps = {
@@ -212,6 +251,7 @@ export default function RFIDReviewPage() {
   const [fromSuggestions, setFromSuggestions] = useState<LocationOut[]>([]);
   const [toSuggestions, setToSuggestions] = useState<LocationOut[]>([]);
   const [locationMap, setLocationMap] = useState<Record<number, LocationOut>>({});
+  const [movementTypeMap, setMovementTypeMap] = useState<Record<number, MovementTypeOut>>({});
 
   const fromDebounceRef = useRef<number | null>(null);
   const toDebounceRef = useRef<number | null>(null);
@@ -226,16 +266,44 @@ export default function RFIDReviewPage() {
 
   async function loadLocationMap() {
     try {
-      const { data } = await apiGet<PageOut<LocationOut>>("/api/locations", {
-        include_inactive: true,
-        page: 1,
-        page_size: 200,
-      });
+      const pageSize = 200;
+      let currentPage = 1;
+      let totalPages = 1;
       const next: Record<number, LocationOut> = {};
-      for (const row of data.items) next[row.id] = row;
+
+      while (currentPage <= totalPages) {
+        const { data, meta } = await apiGet<PageOut<LocationOut>>("/api/locations", {
+          include_inactive: true,
+          page: currentPage,
+          page_size: pageSize,
+        });
+
+        for (const row of data.items) {
+          next[row.id] = row;
+        }
+
+        totalPages =
+          meta.pages && meta.pages > 0
+            ? meta.pages
+            : Math.max(1, Math.ceil((meta.total || 0) / (meta.pageSize || pageSize)));
+
+        currentPage += 1;
+      }
+
       setLocationMap(next);
     } catch {
-      // no-op
+      setLocationMap({});
+    }
+  }
+
+  async function loadMovementTypes() {
+    try {
+      const { data } = await apiGet<MovementTypeOut[]>("/api/movement-types");
+      const next: Record<number, MovementTypeOut> = {};
+      for (const row of data) next[row.id] = row;
+      setMovementTypeMap(next);
+    } catch {
+      setMovementTypeMap({});
     }
   }
 
@@ -269,7 +337,9 @@ export default function RFIDReviewPage() {
 
       if (movementSourceFilter.trim()) {
         const needle = movementSourceFilter.trim().toLowerCase();
-        items = items.filter((row) => sourceLabel(row, locationMap).toLowerCase().includes(needle));
+        items = items.filter((row) =>
+          sourceLabel(row, locationMap).toLowerCase().includes(needle)
+        );
       }
 
       if (movementDestinationFilter.trim()) {
@@ -318,9 +388,12 @@ export default function RFIDReviewPage() {
   }
 
   useEffect(() => {
-    loadMovements(1);
-    loadEvents();
-    loadLocationMap();
+    (async () => {
+      await loadLocationMap();
+      await loadMovementTypes();
+      await loadMovements(1);
+      await loadEvents();
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -378,10 +451,14 @@ export default function RFIDReviewPage() {
     setLocFromId(row.from_location_id ?? null);
     setLocToId(row.to_location_id ?? null);
     setLocFromText(
-      row.from_location_id ? locationMap[row.from_location_id]?.name || String(row.from_location_id) : ""
+      row.from_location_id
+        ? locationMap[row.from_location_id]?.name || String(row.from_location_id)
+        : ""
     );
     setLocToText(
-      row.to_location_id ? locationMap[row.to_location_id]?.name || String(row.to_location_id) : ""
+      row.to_location_id
+        ? locationMap[row.to_location_id]?.name || String(row.to_location_id)
+        : ""
     );
     setFromSuggestions([]);
     setToSuggestions([]);
@@ -411,9 +488,9 @@ export default function RFIDReviewPage() {
 
       await apiJson("PATCH", `/api/movements/${editingMovement.id}/locations`, payload);
       closeLocationEditor();
+      await loadLocationMap();
       await loadMovements(movementPage);
       await loadEvents();
-      await loadLocationMap();
     } catch (e: any) {
       setErr(e?.message ?? String(e));
     }
@@ -445,8 +522,8 @@ export default function RFIDReviewPage() {
       setErr(e?.message ?? String(e));
     }
   }
-  
-   async function confirmMovement(row: MovementOut) {
+
+  async function confirmMovement(row: MovementOut) {
     if (confirmingMovementIds.includes(row.id)) return;
 
     setErr(null);
@@ -588,6 +665,7 @@ export default function RFIDReviewPage() {
                     "ID",
                     "Date",
                     "Part ID",
+                    "Movement Type",
                     "Description",
                     "Source",
                     "Destination",
@@ -643,6 +721,10 @@ export default function RFIDReviewPage() {
                   <th
                     className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
                     style={{ top: FILTER_ROW_TOP }}
+                  />
+                  <th
+                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
+                    style={{ top: FILTER_ROW_TOP }}
                   >
                     <Input
                       value={movementSourceFilter}
@@ -679,7 +761,11 @@ export default function RFIDReviewPage() {
                     style={{ top: FILTER_ROW_TOP }}
                   >
                     <div className="flex justify-end">
-                      <Button variant="outline" onClick={() => loadMovements(1)} disabled={loadingMovements}>
+                      <Button
+                        variant="outline"
+                        onClick={() => loadMovements(1)}
+                        disabled={loadingMovements}
+                      >
                         Search
                       </Button>
                     </div>
@@ -700,6 +786,15 @@ export default function RFIDReviewPage() {
 
                     <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
                       {r.item_key || ""}
+                    </td>
+
+                    <td
+                      className={`border-b border-zinc-100 px-3 py-2 text-sm ${movementTypeClassName(
+                        r.movement_type_id,
+                        movementTypeMap
+                      )}`}
+                    >
+                      {movementTypeLabel(r.movement_type_id, movementTypeMap)}
                     </td>
 
                     <td className="border-b border-zinc-100 px-3 py-2 text-xs text-black">
@@ -747,12 +842,12 @@ export default function RFIDReviewPage() {
                           Edit locations
                         </Button>
                         <Button
-                        variant="primary"
-                        size="sm"
-                        onClick={() => confirmMovement(r)}
-                        disabled={confirmingMovementIds.includes(r.id)}
+                          variant="primary"
+                          size="sm"
+                          onClick={() => confirmMovement(r)}
+                          disabled={confirmingMovementIds.includes(r.id)}
                         >
-                        {confirmingMovementIds.includes(r.id) ? "Confirming..." : "Confirm"}
+                          {confirmingMovementIds.includes(r.id) ? "Confirming..." : "Confirm"}
                         </Button>
                         <Button variant="danger" size="sm" onClick={() => rejectMovement(r)}>
                           Reject
@@ -764,7 +859,7 @@ export default function RFIDReviewPage() {
 
                 {!loadingMovements && movementRows.length === 0 && (
                   <tr>
-                    <td colSpan={9} className="px-3 py-6 text-sm text-zinc-600">
+                    <td colSpan={10} className="px-3 py-6 text-sm text-zinc-600">
                       No pending movements
                     </td>
                   </tr>
@@ -772,7 +867,7 @@ export default function RFIDReviewPage() {
 
                 {loadingMovements && (
                   <tr>
-                    <td colSpan={9} className="px-3 py-6 text-sm text-zinc-600">
+                    <td colSpan={10} className="px-3 py-6 text-sm text-zinc-600">
                       Loading…
                     </td>
                   </tr>
@@ -1056,6 +1151,12 @@ export default function RFIDReviewPage() {
                   </div>
                 </div>
               </div>
+
+              {err && (
+                <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                  Error: {err}
+                </div>
+              )}
 
               <div className="mt-5 flex items-center justify-end gap-2">
                 <Button variant="outline" onClick={closeLocationEditor}>

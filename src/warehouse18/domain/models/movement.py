@@ -1,5 +1,6 @@
 from sqlalchemy import Column, BigInteger, Text, DateTime, Numeric, ForeignKey, String, func
 from .base import Base
+from sqlalchemy.orm import relationship
 
 class Movement(Base):
     __tablename__ = "movements"
@@ -34,3 +35,9 @@ class Movement(Base):
     mysim_synced_at = Column(DateTime(timezone=True), nullable=True)
     mysim_sync_error = Column(Text, nullable=True)
     mysim_movement_id = Column(Text, nullable=True, index=True)
+
+    user = relationship("User", foreign_keys=[user_id])
+
+    @property
+    def user_name(self) -> str | None:
+        return self.user.username if self.user else None

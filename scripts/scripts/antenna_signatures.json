@@ -1,0 +1,39 @@
+{
+  "1": {
+    "logical_keys": [
+      "FA0C_UH0",
+      "FA10_UH0",
+      "FA14_UH0",
+      "FA18_UH0"
+    ],
+    "counts": {
+      "FA19_UH0": 1,
+      "FA18_UH0": 3,
+      "FA0C_UH0": 3,
+      "FA10_UH0": 4,
+      "FA14_UH0": 4
+    }
+  },
+  "2": {
+    "logical_keys": [
+      "FA0C_UH0",
+      "FA0D_UH0",
+      "FA10_UH0",
+      "FA11_UH0",
+      "FA15_UH0",
+      "FA19_UH0"
+    ],
+    "counts": {
+      "FA15_UH0": 4,
+      "FA0C_UH0": 4,
+      "FA09_UH0": 2,
+      "FA18_UH0": 2,
+      "FA11_UH0": 4,
+      "FA10_UH0": 6,
+      "FA19_UH0": 3,
+      "FA0D_UH0": 3,
+      "FA14_UH0": 1,
+      "FA04_UH0": 2
+    }
+  }
+}

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Generic, TypeVar, Optional
+from typing import Generic, TypeVar, Optional, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 from dataclasses import dataclass
@@ -247,6 +247,7 @@ class MovementOut(ORMBase):
 
     mysim_user_id: Optional[int] = None
     user_id: Optional[int] = None
+    user_name: Optional[str] = None
 
     created_at: datetime
     notes: Optional[str] = None
@@ -266,6 +267,20 @@ class MovementLocationsUpdateIn(BaseModel):
     from_location_id: Optional[int] = None
     to_location_id: Optional[int] = None
 
+class ItemLocationOut(BaseModel):
+    item_key: str
+    found: bool
+
+    part_db_id: Optional[int] = None
+    last_movement_id: Optional[str] = None
+    movement_type: Optional[str] = None
+    source_location: Optional[int] = None
+    destination_location: Optional[int] = None
+    destination_location_label: Optional[str] = None
+    done_by: Optional[int] = None
+    movement_date: Optional[str] = None
+
+    raw: Optional[dict[str, Any]] = None
 
 class MovementQuantityUpdateIn(BaseModel):
     quantity: Optional[Decimal] = Field(default=None, gt=0)

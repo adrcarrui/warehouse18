@@ -1,7 +1,7 @@
 from sqlalchemy import String, Boolean, Column, BigInteger, Text, DateTime, func
 from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base
-
+from sqlalchemy.orm import relationship
 
 class User(Base):
     __tablename__ = "users"
@@ -23,3 +23,5 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     mysim_id = Column(BigInteger, nullable=True, unique=True, index=True)
+    
+    movements = relationship("Movement", back_populates="user")

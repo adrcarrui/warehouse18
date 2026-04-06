@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from sqlalchemy.orm import joinedload
 
 from warehouse18.application.rfid.event_log_service import log_rfid_event
 from warehouse18.domain.models import Item, Location, Movement, MovementType, User
@@ -95,7 +96,7 @@ def list_movements(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
 ):
-    stmt = select(Movement)
+    stmt = select(Movement).options(joinedload(Movement.user))
 
     if movement_type_id is not None:
         stmt = stmt.where(Movement.movement_type_id == movement_type_id)
@@ -143,8 +144,36 @@ def list_movements(
         pages=pages,
     )
 
+    items_out = [
+        MovementOut(
+            id=m.id,
+            movement_type_id=m.movement_type_id,
+            item_id=m.item_id,
+            quantity=m.quantity,
+            from_location_id=m.from_location_id,
+            to_location_id=m.to_location_id,
+            reference_type=m.reference_type,
+            reference_id=m.reference_id,
+            mysim_user_id=m.mysim_user_id,
+            user_id=m.user_id,
+            user_name=m.user.username if getattr(m, "user", None) else None,
+            created_at=m.created_at,
+            notes=m.notes,
+            item_key=m.item_key,
+            review_status=m.review_status,
+            reviewed_at=m.reviewed_at,
+            reviewed_by_user_id=m.reviewed_by_user_id,
+            review_note=m.review_note,
+            mysim_sync_status=m.mysim_sync_status,
+            mysim_synced_at=m.mysim_synced_at,
+            mysim_sync_error=m.mysim_sync_error,
+            mysim_movement_id=m.mysim_movement_id,
+        )
+        for m in items
+    ]
+
     return PageOut[MovementOut](
-        items=items,
+        items=items_out,
         page=page,
         page_size=page_size,
         total=total,

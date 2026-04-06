@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any, Dict, List
+from dataclasses import replace
 
 from dotenv import load_dotenv
 
@@ -22,11 +23,14 @@ def main() -> int:
     load_dotenv()
 
     cfg = MySimConfig.from_env()
+    cfg = replace(cfg, timeout=90)
     client = MySimClient(cfg)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    resp = client.get(entity="location", limit=5)
+    resp = client.get(entity="location", limit=3500)
+    print(type(resp))
+    print(json.dumps(resp, ensure_ascii=False, indent=2)[:8000])
     rows = rows_normalized(resp)
 
     print("Locations recibidas:", len(rows))

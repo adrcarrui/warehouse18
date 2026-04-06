@@ -23,6 +23,10 @@ def build_cmd(cmd: int, data: bytes = b"") -> bytes:
     return bytes(frame)
 
 
+def to_hex(data: bytes) -> str:
+    return " ".join(f"{b:02X}" for b in data)
+
+
 def cmd_6c(val: int) -> bytes:
     return build_cmd(0x6C, bytes([val]))
 
@@ -79,6 +83,7 @@ def parse_8a(frame: bytes):
     if len(frame) < 5 or frame[0] != 0xA0 or frame[3] != 0x8A:
         return None
 
+    # Resumen final del comando
     if frame[1] == 0x0A:
         return {
             "type": "summary",
@@ -98,26 +103,56 @@ def parse_8a(frame: bytes):
     if len(epc) < 4:
         return None
 
-    low2 = freq_ant & 0x03
+    # Parte "manual"
+    antenna_id_base = freq_ant & 0x03
+    frequency_param = (freq_ant >> 2) & 0x3F
     upper_half = 1 if (rssi_raw & 0x80) else 0
-    logical_slot = low2 + 1 + (4 if upper_half else 0)
+
+    if upper_half == 0:
+        ant_in_block = 1 + antenna_id_base
+    else:
+        ant_in_block = 5 + antenna_id_base
+
+    # Parte "firma lógica" que ya venías usando
     logical_key = f"FA{freq_ant:02X}_UH{upper_half}"
 
     return {
         "type": "tag",
         "freq_ant": freq_ant,
+        "frequency_param": frequency_param,
+        "antenna_id_base": antenna_id_base,
+        "upper_half": upper_half,
+        "ant_in_block": ant_in_block,
         "pc": pc.hex().upper(),
         "epc": epc.hex().upper(),
+        "rssi_raw": rssi_raw,
         "rssi": rssi_raw & 0x7F,
-        "logical_slot": logical_slot,
         "logical_key": logical_key,
     }
 
 
+def physical_ant_from_step(step_val: int, ant_in_block: int) -> int:
+    # Según tus pruebas actuales:
+    # 6C01 está leyendo el bloque 9..16
+    # 6C00 lo dejamos provisionalmente como 1..8 para comparar
+    if step_val == 0x01:
+        return 8 + ant_in_block
+    return ant_in_block
+
+
 def do_step(sock, rx, cycle_label, val):
-    sock.sendall(cmd_6c(val))
+    rx.clear()
+
+    send_6c = cmd_6c(val)
+    send_inv = cmd_inventory()
+
+    print(f"{cycle_label} step=6C{val:02X} SEND 6C : {to_hex(send_6c)}")
+    sock.sendall(send_6c)
+
     time.sleep(STEP_DELAY)
-    sock.sendall(cmd_inventory())
+
+    print(f"{cycle_label} step=6C{val:02X} SEND 8A : {to_hex(send_inv)}")
+    sock.sendall(send_inv)
 
     got_tag = False
     t0 = time.time()
@@ -126,10 +161,14 @@ def do_step(sock, rx, cycle_label, val):
             chunk = sock.recv(4096)
             if not chunk:
                 break
+
             rx.extend(chunk)
 
             for frame in extract_frames(rx):
+                print(f"{cycle_label} step=6C{val:02X} RAW: {to_hex(frame)}")
+
                 if not verify(frame):
+                    print(f"{cycle_label} step=6C{val:02X} BAD_CHECKSUM")
                     continue
 
                 parsed = parse_8a(frame)
@@ -144,12 +183,21 @@ def do_step(sock, rx, cycle_label, val):
                     )
                 else:
                     got_tag = True
+                    physical_ant_guess = physical_ant_from_step(
+                        val, parsed["ant_in_block"]
+                    )
+
                     print(
                         f"{cycle_label} step=6C{val:02X} TAG "
                         f"epc={parsed['epc']} "
                         f"logical_key={parsed['logical_key']} "
-                        f"slot={parsed['logical_slot']} "
-                        f"freq=0x{parsed['freq_ant']:02X} "
+                        f"freq_ant=0x{parsed['freq_ant']:02X} "
+                        f"freq_param={parsed['frequency_param']} "
+                        f"antenna_id_base={parsed['antenna_id_base']} "
+                        f"upper_half={parsed['upper_half']} "
+                        f"ant_in_block={parsed['ant_in_block']} "
+                        f"physical_ant_guess={physical_ant_guess} "
+                        f"rssi_raw=0x{parsed['rssi_raw']:02X} "
                         f"rssi={parsed['rssi']} "
                         f"pc={parsed['pc']}"
                     )
@@ -159,6 +207,16 @@ def do_step(sock, rx, cycle_label, val):
 
     return got_tag
 
+def ant_in_block_from_frame(freq_ant: int, rssi_raw: int) -> int:
+    antenna_id_base = freq_ant & 0x03
+    upper_half = 1 if (rssi_raw & 0x80) else 0
+    return (1 + antenna_id_base) if upper_half == 0 else (5 + antenna_id_base)
+
+
+def physical_antenna_from_step(step_val: int, ant_in_block: int) -> int:
+    if step_val == 0x01:
+        return 8 + ant_in_block   # 9..16
+    return ant_in_block           # 1..8
 
 def main():
     rx = bytearray()
@@ -167,8 +225,8 @@ def main():
         s.settimeout(RECV_TIMEOUT)
         s.connect((HOST, PORT))
 
-        print("Modo 1-8 candidato: 6C01 -> 8A -> 6C00 -> 8A")
-        print("Deja un solo tag quieto SOLO en una antena 1-8.\n")
+        print("Comparador de antena según manual 8A")
+        print("6C01 -> 8A -> 6C00 -> 8A\n")
 
         cycle = 0
         while True:
