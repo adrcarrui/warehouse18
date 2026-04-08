@@ -3,17 +3,27 @@ import { AppShell } from "../app/AppShell";
 import { apiGet } from "../api";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
+import { WarehouseMapReal } from "../ui/WarehouseMapReal";
 
 type ItemLocationOut = {
   item_key: string;
   found: boolean;
   part_db_id?: number | null;
   last_movement_id?: string | null;
+
   movement_type?: string | null;
+  movement_type_name?: string | null;
+
   source_location?: number | null;
+  source_location_name?: string | null;
+
   destination_location?: number | null;
+  destination_location_name?: string | null;
   destination_location_label?: string | null;
+
   done_by?: number | null;
+  done_by_name?: string | null;
+
   movement_date?: string | null;
   raw?: Record<string, unknown> | null;
 };
@@ -23,6 +33,26 @@ function fmtDate(v?: string | null) {
   const d = new Date(v);
   if (Number.isNaN(d.getTime())) return v;
   return d.toLocaleString("en-GB");
+}
+
+/*
+  Extrae el número de pasillo desde:
+  - W18-AISLE2
+  - AISLE_2
+  - AISLE-2
+*/
+function extractAisleNumber(value?: string | null): number | null {
+  if (!value) return null;
+
+  const v = value.toUpperCase();
+
+  let match = v.match(/W18-AISLE\s*([1-6])/);
+  if (match) return Number(match[1]);
+
+  match = v.match(/AISLE[_\s-]*([1-6])/);
+  if (match) return Number(match[1]);
+
+  return null;
 }
 
 export default function ItemLocationPage() {
@@ -47,9 +77,10 @@ export default function ItemLocationPage() {
     setResult(null);
 
     try {
-      const { data } = await apiGet<ItemLocationOut>("/api/mysim/item-location", {
-        part_id: n,
-      });
+      const { data } = await apiGet<ItemLocationOut>(
+        "/api/mysim/item-location",
+        { part_id: n }
+      );
       setResult(data);
     } catch (e: any) {
       setErr(e?.message ?? String(e));
@@ -58,18 +89,27 @@ export default function ItemLocationPage() {
     }
   }
 
+  const activeAisle = extractAisleNumber(
+    result?.destination_location_name ||
+      result?.destination_location_label ||
+      null
+  );
+
   return (
     <AppShell
       title="Item Location"
       subtitle="Check the current location from the latest mySim movement"
     >
       <div className="space-y-4">
+
+        {/* ERROR */}
         {err && (
           <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
             Error: {err}
           </div>
         )}
 
+        {/* SEARCH */}
         <div className="rounded-xl border border-zinc-200 bg-white p-4">
           <div className="flex gap-2">
             <Input
@@ -86,9 +126,14 @@ export default function ItemLocationPage() {
           </div>
         </div>
 
+        {/* RESULT */}
         {result && (
           <div className="rounded-xl border border-zinc-200 bg-white p-5">
-            <div className="text-xs font-semibold text-zinc-500">PART DB ID</div>
+
+            {/* PART ID */}
+            <div className="text-xs font-semibold text-zinc-500">
+              PART DB ID
+            </div>
             <div className="text-lg font-semibold text-zinc-900">
               {result.part_db_id ?? result.item_key}
             </div>
@@ -99,25 +144,42 @@ export default function ItemLocationPage() {
               </div>
             ) : (
               <>
+                {/* CURRENT LOCATION */}
                 <div className="mt-5 text-xs font-semibold text-zinc-500">
                   CURRENT LOCATION
                 </div>
+
                 <div className="mt-1 text-2xl font-bold text-blue-700">
-                  {result.destination_location_label || "Unknown"}
+                  {result.destination_location_name ||
+                    result.destination_location_label ||
+                    "Unknown"}
                 </div>
 
+                {/* MAPA CENTRADO */}
+                <div className="mt-5 flex justify-center">
+                  <WarehouseMapReal activeAisle={activeAisle} />
+                </div>
+
+                {/* INFO GRID */}
                 <div className="mt-5 grid gap-3 md:grid-cols-2">
+
                   <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-                    <div className="text-xs text-zinc-500">Last Movement ID</div>
+                    <div className="text-xs text-zinc-500">
+                      Last Movement ID
+                    </div>
                     <div className="text-sm font-medium text-zinc-900">
                       {result.last_movement_id || "—"}
                     </div>
                   </div>
 
                   <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-                    <div className="text-xs text-zinc-500">Movement Type</div>
+                    <div className="text-xs text-zinc-500">
+                      Movement Type
+                    </div>
                     <div className="text-sm font-medium text-zinc-900">
-                      {result.movement_type || "—"}
+                      {result.movement_type_name ||
+                        result.movement_type ||
+                        "—"}
                     </div>
                   </div>
 
@@ -131,25 +193,37 @@ export default function ItemLocationPage() {
                   <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
                     <div className="text-xs text-zinc-500">Done By</div>
                     <div className="text-sm font-medium text-zinc-900">
-                      {result.done_by ?? "—"}
+                      {result.done_by_name ||
+                        result.done_by ||
+                        "—"}
                     </div>
                   </div>
 
                   <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-                    <div className="text-xs text-zinc-500">Source Location ID</div>
+                    <div className="text-xs text-zinc-500">
+                      Source Location
+                    </div>
                     <div className="text-sm font-medium text-zinc-900">
-                      {result.source_location ?? "—"}
+                      {result.source_location_name ||
+                        result.source_location ||
+                        "—"}
                     </div>
                   </div>
 
                   <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-                    <div className="text-xs text-zinc-500">Destination Location ID</div>
+                    <div className="text-xs text-zinc-500">
+                      Destination Location
+                    </div>
                     <div className="text-sm font-medium text-zinc-900">
-                      {result.destination_location ?? "—"}
+                      {result.destination_location_name ||
+                        result.destination_location ||
+                        "—"}
                     </div>
                   </div>
+
                 </div>
 
+                {/* RAW DEBUG */}
                 {result.raw && (
                   <details className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-3">
                     <summary className="cursor-pointer text-sm font-medium text-zinc-800">
@@ -160,6 +234,7 @@ export default function ItemLocationPage() {
                     </pre>
                   </details>
                 )}
+
               </>
             )}
           </div>

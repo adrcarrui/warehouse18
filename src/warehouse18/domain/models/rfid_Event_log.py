@@ -47,3 +47,4 @@ class RfidEventLog(Base):
     review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     reviewed_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     reviewed_by_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    confirmed_movement_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)

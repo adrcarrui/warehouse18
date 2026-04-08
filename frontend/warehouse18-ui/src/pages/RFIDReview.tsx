@@ -605,9 +605,11 @@ export default function RFIDReviewPage() {
           <Button variant="outline" onClick={() => loadMovements(1)} disabled={loadingMovements}>
             Reload movements
           </Button>
+          {/*
           <Button variant="outline" onClick={() => loadEvents()} disabled={loadingEvents}>
             Reload events
           </Button>
+          */}
         </div>
       }
     >
@@ -617,7 +619,7 @@ export default function RFIDReviewPage() {
             Error: {err}
           </div>
         )}
-
+        {/*
         <div className="rounded-xl border border-zinc-200 bg-white p-4">
           <div className="grid gap-3 md:grid-cols-3">
             <div>
@@ -648,7 +650,7 @@ export default function RFIDReviewPage() {
             </div>
           </div>
         </div>
-
+          */}
         <div className="rounded-xl border border-zinc-200 bg-white">
           <div className="border-b border-zinc-200 px-4 py-3">
             <div className="text-sm font-semibold text-zinc-900">Pending Movements</div>
@@ -900,7 +902,7 @@ export default function RFIDReviewPage() {
             </div>
           </div>
         </div>
-
+        {/*
         <div className="rounded-xl border border-zinc-200 bg-white">
           <div className="border-b border-zinc-200 px-4 py-3">
             <div className="text-sm font-semibold text-zinc-900">Pending RFID Events</div>
@@ -1085,7 +1087,7 @@ export default function RFIDReviewPage() {
             </table>
           </div>
         </div>
-
+          */}
         {locationEditorOpen && editingMovement && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
             <div className="w-full max-w-2xl rounded-2xl border border-zinc-200 bg-white p-5 shadow-xl">

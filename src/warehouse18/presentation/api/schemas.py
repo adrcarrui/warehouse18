@@ -270,17 +270,24 @@ class MovementLocationsUpdateIn(BaseModel):
 class ItemLocationOut(BaseModel):
     item_key: str
     found: bool
+    part_db_id: int | None = None
+    last_movement_id: str | None = None
 
-    part_db_id: Optional[int] = None
-    last_movement_id: Optional[str] = None
-    movement_type: Optional[str] = None
-    source_location: Optional[int] = None
-    destination_location: Optional[int] = None
-    destination_location_label: Optional[str] = None
-    done_by: Optional[int] = None
-    movement_date: Optional[str] = None
+    movement_type: str | int | None = None
+    movement_type_name: str | None = None
 
-    raw: Optional[dict[str, Any]] = None
+    source_location: int | None = None
+    source_location_name: str | None = None
+
+    destination_location: int | None = None
+    destination_location_name: str | None = None
+    destination_location_label: str | None = None
+
+    done_by: int | None = None
+    done_by_name: str | None = None
+
+    movement_date: str | None = None
+    raw: dict | None = None
 
 class MovementQuantityUpdateIn(BaseModel):
     quantity: Optional[Decimal] = Field(default=None, gt=0)

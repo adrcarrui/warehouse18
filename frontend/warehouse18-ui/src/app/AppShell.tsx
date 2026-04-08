@@ -22,14 +22,14 @@ type NavItem = {
 
 const NAV: NavItem[] = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
-  { label: "Items", href: "/items", icon: Package },
+  //{ label: "Items", href: "/items", icon: Package },
   { label: "Movements", href: "/movements", icon: ArrowLeftRight },
   { label: "Locations", href: "/locations", icon: MapPin },
   { label: "Users", href: "/users", icon: Users },
   { label: "RFID Monitor", href: "/rfid-monitor", icon: Radio },
-  { label: "Settings", href: "/settings", icon: Settings },
   { label: "RFID Review", href: "/rfid-review", icon: Radio },
   { label: "Item Location", href: "/item-location", icon: MapPin },
+  //{ label: "Settings", href: "/settings", icon: Settings },
 ];
 
 const STORAGE_KEY = "warehouse18.sidebarCollapsed";

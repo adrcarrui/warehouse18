@@ -199,7 +199,12 @@ def confirm_movement_review(
     if not reviewer:
         raise HTTPException(status_code=404, detail="Reviewer user not found")
 
-    movement = db.query(Movement).filter(Movement.id == movement_id).with_for_update().first()
+    movement = (
+        db.query(Movement)
+        .filter(Movement.id == movement_id)
+        .with_for_update()
+        .first()
+    )
     if not movement:
         raise HTTPException(status_code=404, detail="Movement not found")
 
@@ -226,8 +231,10 @@ def confirm_movement_review(
             detail=f"Only pending movements can be confirmed (current status={movement.review_status})",
         )
 
+    now = datetime.now(timezone.utc)
+
     movement.review_status = "confirmed"
-    movement.reviewed_at = datetime.now(timezone.utc)
+    movement.reviewed_at = now
     movement.reviewed_by_user_id = body.reviewed_by_user_id
     movement.review_note = body.note
     movement.mysim_sync_status = "queued"
@@ -245,9 +252,10 @@ def confirm_movement_review(
     db.query(RfidEventLog).filter(RfidEventLog.movement_id == movement_id).update(
         {
             RfidEventLog.review_status: "confirmed",
-            RfidEventLog.reviewed_at: movement.reviewed_at,
+            RfidEventLog.reviewed_at: now,
             RfidEventLog.reviewed_by_user_id: body.reviewed_by_user_id,
             RfidEventLog.review_note: body.note,
+            RfidEventLog.confirmed_movement_id: movement.id,
         },
         synchronize_session=False,
     )
@@ -291,27 +299,31 @@ def reject_movement_review(
             detail=f"Only pending movements can be rejected (current status={movement.review_status})",
         )
 
+    now = datetime.now(timezone.utc)
+
     movement.review_status = "rejected"
-    movement.reviewed_at = datetime.now(timezone.utc)
+    movement.reviewed_at = now
     movement.reviewed_by_user_id = body.reviewed_by_user_id
     movement.review_note = body.note
     movement.mysim_sync_status = "skipped"
     movement.mysim_sync_error = None
 
     db.add(movement)
-    db.commit()
-    db.refresh(movement)
+    db.flush()
 
     db.query(RfidEventLog).filter(RfidEventLog.movement_id == movement_id).update(
         {
             RfidEventLog.review_status: "rejected",
-            RfidEventLog.reviewed_at: movement.reviewed_at,
+            RfidEventLog.reviewed_at: now,
             RfidEventLog.reviewed_by_user_id: body.reviewed_by_user_id,
             RfidEventLog.review_note: body.note,
+            RfidEventLog.confirmed_movement_id: None,
         },
         synchronize_session=False,
     )
+
     db.commit()
+    db.refresh(movement)
 
     return MovementReviewOut(
         movement_id=movement.id,

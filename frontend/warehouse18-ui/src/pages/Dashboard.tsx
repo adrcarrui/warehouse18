@@ -78,8 +78,6 @@ export default function DashboardPage() {
       title="Dashboard"
       actions={
         <div className="flex items-center gap-2">
-          {badgeFormySim}
-          {badgeForRfid}
         </div>
       }
     >
