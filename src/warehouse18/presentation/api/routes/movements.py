@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 from datetime import datetime, timezone
 
 from warehouse18.infrastructure.db import get_db
@@ -16,6 +16,7 @@ from warehouse18.presentation.api.schemas import (
 )
 from warehouse18.presentation.api.paging import paginate
 from warehouse18.presentation.api.pagination_headers import set_pagination_headers
+from warehouse18.application.rfid.door_engine import close_pending_and_set_cooldown_for_review
 
 router = APIRouter(prefix="/movements", tags=["movements"])
 
@@ -236,14 +237,73 @@ def confirm_movement(
     mv.report_reason = reason
 
     # Solo se cola para sync cuando se confirma.
-    # Si prefieres bloquear sync cuando needs_report=True, se cambia aquí.
     mv.mysim_sync_status = MYSIM_SYNC_STATUS_QUEUED
 
     db.add(mv)
+    db.flush()
+
+    # Evita duplicar trabajos activos para el mismo movimiento
+    existing_outbox = db.execute(
+        text(
+            """
+            SELECT id
+            FROM integration_outbox
+            WHERE direction = 'outbound'
+              AND target_system = 'mysim'
+              AND entity_type = 'movement'
+              AND entity_id = :movement_id
+              AND action = 'sync'
+              AND status IN ('pending', 'processing', 'error')
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ),
+        {"movement_id": mv.id},
+    ).first()
+
+    if existing_outbox is None:
+        db.execute(
+            text(
+                """
+                INSERT INTO integration_outbox (
+                    direction,
+                    target_system,
+                    entity_type,
+                    entity_id,
+                    action,
+                    payload_json,
+                    status,
+                    retries,
+                    created_at
+                )
+                VALUES (
+                    'outbound',
+                    'mysim',
+                    'movement',
+                    :movement_id,
+                    'sync',
+                    CAST(:payload_json AS jsonb),
+                    'pending',
+                    0,
+                    now()
+                )
+                """
+            ),
+            {
+                "movement_id": mv.id,
+                "payload_json": "{}",
+            },
+        )
+
     db.commit()
     db.refresh(mv)
-    return mv
 
+    close_pending_and_set_cooldown_for_review(
+        movement_id=mv.id,
+        source="confirm",
+    )
+
+    return mv
 
 @router.post("/{movement_id}/reject", response_model=MovementOut)
 def reject_movement(
@@ -276,6 +336,12 @@ def reject_movement(
     db.add(mv)
     db.commit()
     db.refresh(mv)
+
+    close_pending_and_set_cooldown_for_review(
+        movement_id=mv.id,
+        source="reject",
+    )
+
     return mv
 
 @router.patch("/{movement_id}/locations", response_model=MovementOut)

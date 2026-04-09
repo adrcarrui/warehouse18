@@ -23,7 +23,7 @@
           "location_id": 2790,
           "mysim_location_env": "MYSIM_RFID_LOC_AISLE_1",
           "enabled": true,
-          "aisle_id": "AISLE1_1"
+          "aisle_id": "AISLE_1"
         },
         {
           "antenna": 2,
@@ -33,7 +33,7 @@
           "location_id": 2790,
           "mysim_location_env": "MYSIM_RFID_LOC_AISLE_1",
           "enabled": true,
-          "aisle_id": "W18-AISLE1"
+          "aisle_id": "AISLE_1"
         },
 
         {

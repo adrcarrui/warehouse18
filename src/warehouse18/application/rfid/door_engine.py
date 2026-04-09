@@ -20,6 +20,7 @@ from warehouse18.application.rfid.movement_service import (
     mutate_issue_to_transfer,
     resolve_local_location_id_by_mysim_code,
     resolve_local_user_by_mysim_id,
+    update_transfer_destination,
 )
 from warehouse18.domain.models.app_setting import AppSetting
 from warehouse18.infrastructure.config.antenna_map import (
@@ -51,7 +52,9 @@ class PendingMovement:
     door_id: str
     first_route: RouteConfig
     from_location_id_local: int | None = None
-
+    last_route: RouteConfig | None = None
+    last_location_id_local: int | None = None
+    receipt_destination_completed: bool = False
 
 _epc_schema: EPCSchema | None = None
 _route_index: dict[tuple[str, int], RouteConfig] | None = None
@@ -61,6 +64,59 @@ _last_seen_reader_event: dict[tuple[str, int, str], float] = {}
 _pending_movement_by_epc: dict[str, PendingMovement] = {}
 _movement_cooldown_by_epc: dict[str, float] = {}
 
+def close_pending_and_set_cooldown_for_review(
+    *,
+    movement_id: int,
+    source: str,
+) -> dict[str, Any]:
+    _reload_runtime_config()
+    now_ts = time.time()
+
+    matched_epc = None
+    matched_pending = None
+
+    for epc_key, pending in _pending_movement_by_epc.items():
+        if int(pending.movement_id) == int(movement_id):
+            matched_epc = epc_key
+            matched_pending = pending
+            break
+
+    if matched_epc is None or matched_pending is None:
+        log.warning(
+            "RFID MANUAL REVIEW CLOSE NOOP | source=%s movement_id=%s reason=no_pending_found",
+            source,
+            movement_id,
+        )
+        return {
+            "closed": False,
+            "reason": "no_pending_found",
+            "movement_id": movement_id,
+            "source": source,
+        }
+
+    _pending_movement_by_epc.pop(matched_epc, None)
+    cooldown_until = now_ts + MOVE_COOLDOWN_S
+    _movement_cooldown_by_epc[matched_epc] = cooldown_until
+
+    log.warning(
+        "RFID MANUAL REVIEW CLOSE APPLIED | source=%s movement_id=%s epc=%s now_ts=%.3f cooldown_until=%.3f cooldown_s=%.3f",
+        source,
+        movement_id,
+        matched_epc,
+        now_ts,
+        cooldown_until,
+        MOVE_COOLDOWN_S,
+    )
+
+    return {
+        "closed": True,
+        "reason": "pending_removed_and_cooldown_set",
+        "movement_id": movement_id,
+        "epc": matched_epc,
+        "source": source,
+        "cooldown_until": cooldown_until,
+        "cooldown_seconds": MOVE_COOLDOWN_S,
+    }
 
 def _reload_runtime_config() -> None:
     global USER_PRESENCE_TTL_S
@@ -74,7 +130,7 @@ def _reload_runtime_config() -> None:
     USER_BIND_TTL_S = int(os.getenv("WAREHOUSE18_RFID_USER_BIND_TTL_SECONDS", "20"))
     USER_COOLDOWN_S = float(os.getenv("WAREHOUSE18_RFID_USER_COOLDOWN_SECONDS", "2"))
     READER_DEDUPE_S = float(os.getenv("WAREHOUSE18_RFID_READER_DEDUPE_SECONDS", "0.6"))
-    MOVE_COOLDOWN_S = float(os.getenv("WAREHOUSE18_RFID_MOVE_COOLDOWN_SECONDS", "5"))
+    MOVE_COOLDOWN_S = float(os.getenv("WAREHOUSE18_RFID_MOVE_COOLDOWN_SECONDS", "0"))
     PREVENTIVE_ENRICH_WINDOW_S = float(
         os.getenv("WAREHOUSE18_RFID_PREVENTIVE_ENRICH_WINDOW_SECONDS", "30")
     )
@@ -163,6 +219,12 @@ def _find_recent_user_for_door(door_id: str, now_ts: float) -> int | None:
         return None
     return int(data["user_id"])
 
+def _refresh_pending_window(
+    pending: PendingMovement,
+    *,
+    now_ts: float,
+) -> None:
+    pending.expires_at = now_ts + PREVENTIVE_ENRICH_WINDOW_S
 
 def _is_entrance(route: RouteConfig) -> bool:
     return route.aisle_id == "ENTRANCE"
@@ -600,6 +662,9 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
             door_id=route.door_id,
             first_route=route,
             from_location_id_local=None,
+            last_route=route,
+            last_location_id_local=None,
+            receipt_destination_completed=False,
         )
         _pending_movement_by_epc[epc] = pending
 
@@ -671,6 +736,9 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
             door_id=route.door_id,
             first_route=route,
             from_location_id_local=from_location_id_local,
+            last_route=route,
+            last_location_id_local=from_location_id_local,
+            receipt_destination_completed=False,
         )
         _pending_movement_by_epc[epc] = pending
 
@@ -743,8 +811,11 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
             "zone_role": route.zone_role,
         }
 
-    # GR preventivo + lectura posterior en pasillo -> completar destino
+    # GR preventivo: se crea en entrada y permanece abierto hasta timeout o confirm/reject
     if pending.movement_code == "GR":
+        _refresh_pending_window(pending, now_ts=now_ts)
+        pending.last_route = route
+
         if _is_entrance(route):
             return {
                 "status": "ok",
@@ -757,10 +828,72 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
                 "zone_role": route.zone_role,
                 "movement_id": movement.id,
                 "movement_code": "GR",
+                "receipt_destination_completed": pending.receipt_destination_completed,
             }
 
         if _is_aisle(route):
             to_location_id_local = resolve_local_location_id_by_mysim_code(db, route.location_id)
+            pending.last_location_id_local = to_location_id_local
+
+            # Si todavía no tenía destino, lo completamos
+            if not pending.receipt_destination_completed:
+                movement = complete_receipt_destination(
+                    db,
+                    movement=movement,
+                    to_location_id_local=to_location_id_local,
+                    mysim_user_id=recent_mysim_user_id,
+                )
+                pending.receipt_destination_completed = True
+
+                log_rfid_event(
+                    db,
+                    event_type="movement_updated",
+                    reason="preventive_gr_completed_with_destination",
+                    epc=epc,
+                    reader_id=reader_id,
+                    antenna=event.antenna,
+                    door_id=route.door_id,
+                    zone_id=route.zone_id,
+                    zone_role=route.zone_role,
+                    movement_code="GR",
+                    payload_json={
+                        "movement_id": movement.id,
+                        "item_key": movement.item_key,
+                        "route": f"{pending.first_route.aisle_id}->{route.aisle_id}",
+                        "to_location_id_local": to_location_id_local,
+                        "last_seen_location_id_local": pending.last_location_id_local,
+                        "last_seen_aisle": route.aisle_id,
+                        "expires_at": pending.expires_at,
+                        "rfid_status": movement.rfid_status,
+                        "review_status": movement.review_status,
+                        "user_id": movement.user_id,
+                        "mysim_user_id": movement.mysim_user_id,
+                    },
+                )
+
+                return {
+                    "status": "ok",
+                    "reason": "preventive_gr_completed",
+                    "epc": epc,
+                    "antenna": event.antenna,
+                    "reader_id": reader_id,
+                    "logical_name": route.logical_name,
+                    "location_id": route.location_id,
+                    "zone": route.zone_id,
+                    "zone_role": route.zone_role,
+                    "route_mode": "door_engine",
+                    "door_id": route.door_id,
+                    "movement_id": movement.id,
+                    "movement_code": "GR",
+                    "review_status": movement.review_status,
+                    "rfid_status": movement.rfid_status,
+                    "last_seen_location_id_local": pending.last_location_id_local,
+                    "last_seen_aisle": route.aisle_id,
+                    "receipt_destination_completed": True,
+                    "ref_key": f"{route.door_id}:{epc}",
+                }
+
+            # Si ya tenía destino, actualizamos la localización al último pasillo visto
             movement = complete_receipt_destination(
                 db,
                 movement=movement,
@@ -768,13 +901,10 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
                 mysim_user_id=recent_mysim_user_id,
             )
 
-            _pending_movement_by_epc.pop(epc, None)
-            _movement_cooldown_by_epc[epc] = now_ts + MOVE_COOLDOWN_S
-
             log_rfid_event(
                 db,
                 event_type="movement_updated",
-                reason="preventive_gr_completed_with_destination",
+                reason="pending_gr_updated_last_seen_aisle",
                 epc=epc,
                 reader_id=reader_id,
                 antenna=event.antenna,
@@ -784,11 +914,12 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
                 movement_code="GR",
                 payload_json={
                     "movement_id": movement.id,
-                    "item_key": movement.item_key,
-                    "route": f"{pending.first_route.aisle_id}->{route.aisle_id}",
-                    "to_location_id_local": to_location_id_local,
-                    "rfid_status": movement.rfid_status,
+                    "to_location_id_local": movement.to_location_id,
+                    "last_seen_location_id_local": pending.last_location_id_local,
+                    "last_seen_aisle": route.aisle_id,
+                    "expires_at": pending.expires_at,
                     "review_status": movement.review_status,
+                    "rfid_status": movement.rfid_status,
                     "user_id": movement.user_id,
                     "mysim_user_id": movement.mysim_user_id,
                 },
@@ -796,7 +927,7 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
 
             return {
                 "status": "ok",
-                "reason": "preventive_gr_completed",
+                "reason": "pending_gr_updated",
                 "epc": epc,
                 "antenna": event.antenna,
                 "reader_id": reader_id,
@@ -810,6 +941,9 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
                 "movement_code": "GR",
                 "review_status": movement.review_status,
                 "rfid_status": movement.rfid_status,
+                "last_seen_location_id_local": pending.last_location_id_local,
+                "last_seen_aisle": route.aisle_id,
+                "receipt_destination_completed": True,
                 "ref_key": f"{route.door_id}:{epc}",
             }
 
@@ -817,6 +951,10 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
     if pending.movement_code == "GI":
         if _is_aisle(route):
             to_location_id_local = resolve_local_location_id_by_mysim_code(db, route.location_id)
+
+            _refresh_pending_window(pending, now_ts=now_ts)
+            pending.last_route = route
+            pending.last_location_id_local = to_location_id_local
 
             if pending.from_location_id_local == to_location_id_local:
                 return {
@@ -830,6 +968,8 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
                     "zone_role": route.zone_role,
                     "movement_id": movement.id,
                     "movement_code": "GI",
+                    "last_seen_location_id_local": pending.last_location_id_local,
+                    "last_seen_aisle": route.aisle_id,
                 }
 
             movement = mutate_issue_to_transfer(
@@ -839,8 +979,9 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
                 mysim_user_id=recent_mysim_user_id,
             )
 
-            _pending_movement_by_epc.pop(epc, None)
-            _movement_cooldown_by_epc[epc] = now_ts + MOVE_COOLDOWN_S
+            pending.movement_code = "GT"
+            pending.last_route = route
+            pending.last_location_id_local = to_location_id_local
 
             log_rfid_event(
                 db,
@@ -859,6 +1000,9 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
                     "route": f"{pending.first_route.aisle_id}->{route.aisle_id}",
                     "from_location_id_local": pending.from_location_id_local,
                     "to_location_id_local": to_location_id_local,
+                    "last_seen_location_id_local": pending.last_location_id_local,
+                    "last_seen_aisle": route.aisle_id,
+                    "expires_at": pending.expires_at,
                     "rfid_status": movement.rfid_status,
                     "review_status": movement.review_status,
                     "user_id": movement.user_id,
@@ -882,10 +1026,15 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
                 "movement_code": "GT",
                 "review_status": movement.review_status,
                 "rfid_status": movement.rfid_status,
+                "last_seen_location_id_local": pending.last_location_id_local,
+                "last_seen_aisle": route.aisle_id,
                 "ref_key": f"{route.door_id}:{epc}",
             }
 
         if _is_entrance(route):
+            _refresh_pending_window(pending, now_ts=now_ts)
+            pending.last_route = route
+
             return {
                 "status": "ok",
                 "reason": "preventive_gi_waiting_confirmation_or_other_aisle",
@@ -897,6 +1046,105 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
                 "zone_role": route.zone_role,
                 "movement_id": movement.id,
                 "movement_code": "GI",
+            }
+
+    if pending.movement_code == "GT":
+        _refresh_pending_window(pending, now_ts=now_ts)
+
+        if _is_aisle(route):
+            last_location_id_local = resolve_local_location_id_by_mysim_code(db, route.location_id)
+            pending.last_route = route
+            pending.last_location_id_local = last_location_id_local
+
+            movement = update_transfer_destination(
+                db,
+                movement=movement,
+                to_location_id_local=last_location_id_local,
+                mysim_user_id=recent_mysim_user_id,
+            )
+
+            log_rfid_event(
+                db,
+                event_type="movement_updated",
+                reason="pending_gt_updated_last_seen_aisle",
+                epc=epc,
+                reader_id=reader_id,
+                antenna=event.antenna,
+                door_id=route.door_id,
+                zone_id=route.zone_id,
+                zone_role=route.zone_role,
+                movement_code="GT",
+                payload_json={
+                    "movement_id": movement.id,
+                    "to_location_id_local": movement.to_location_id,
+                    "last_seen_location_id_local": pending.last_location_id_local,
+                    "last_seen_aisle": route.aisle_id,
+                    "expires_at": pending.expires_at,
+                    "review_status": movement.review_status,
+                    "rfid_status": movement.rfid_status,
+                    "user_id": movement.user_id,
+                    "mysim_user_id": movement.mysim_user_id,
+                },
+            )
+
+            return {
+                "status": "ok",
+                "reason": "pending_gt_updated",
+                "epc": epc,
+                "antenna": event.antenna,
+                "reader_id": reader_id,
+                "logical_name": route.logical_name,
+                "location_id": route.location_id,
+                "zone": route.zone_id,
+                "zone_role": route.zone_role,
+                "route_mode": "door_engine",
+                "door_id": route.door_id,
+                "movement_id": movement.id,
+                "movement_code": "GT",
+                "review_status": movement.review_status,
+                "rfid_status": movement.rfid_status,
+                "last_seen_location_id_local": pending.last_location_id_local,
+                "last_seen_aisle": route.aisle_id,
+                "ref_key": f"{route.door_id}:{epc}",
+            }
+
+        if _is_entrance(route):
+            pending.last_route = route
+
+            log_rfid_event(
+                db,
+                event_type="movement_updated",
+                reason="pending_gt_seen_at_entrance",
+                epc=epc,
+                reader_id=reader_id,
+                antenna=event.antenna,
+                door_id=route.door_id,
+                zone_id=route.zone_id,
+                zone_role=route.zone_role,
+                movement_code="GT",
+                payload_json={
+                    "movement_id": movement.id,
+                    "last_seen_aisle": "ENTRANCE",
+                    "expires_at": pending.expires_at,
+                    "review_status": movement.review_status,
+                    "rfid_status": movement.rfid_status,
+                },
+            )
+
+            return {
+                "status": "ok",
+                "reason": "pending_gt_seen_at_entrance",
+                "epc": epc,
+                "antenna": event.antenna,
+                "reader_id": reader_id,
+                "door_id": route.door_id,
+                "zone": route.zone_id,
+                "zone_role": route.zone_role,
+                "movement_id": movement.id,
+                "movement_code": "GT",
+                "review_status": movement.review_status,
+                "rfid_status": movement.rfid_status,
+                "last_seen_aisle": "ENTRANCE",
             }
 
     return {

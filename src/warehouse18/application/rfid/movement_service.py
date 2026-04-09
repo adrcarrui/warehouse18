@@ -234,3 +234,55 @@ def attach_user_to_movement_if_missing(
         db.refresh(movement)
 
     return movement
+
+def update_transfer_destination(
+    db: Session,
+    *,
+    movement,
+    to_location_id_local: int | None,
+    mysim_user_id: int | None = None,
+):
+    if to_location_id_local is not None:
+        movement.to_location_id = to_location_id_local
+
+    if mysim_user_id is not None and movement.mysim_user_id is None:
+        local_user = resolve_local_user_by_mysim_id(db, mysim_user_id)
+        if local_user is not None and movement.user_id is None:
+            movement.user_id = local_user.id
+        movement.mysim_user_id = mysim_user_id
+
+    db.add(movement)
+    db.commit()
+    db.refresh(movement)
+    return movement
+
+def sync_pending_reviewed_movement(
+    db: Session,
+    *,
+    movement,
+    movement_event: Any | None = None,
+):
+    """
+    Shim de compatibilidad para el flujo de sync a mySim.
+
+    Objetivo inmediato:
+    - restaurar el símbolo que mysim_sync_service importa
+    - permitir que el worker arranque
+    - no pisar datos existentes del movimiento
+
+    Comportamiento actual:
+    - refresca el movimiento desde BD
+    - no modifica campos si no hay lógica de enriquecimiento definida aquí
+    - devuelve el movimiento listo para que mysim_sync_service continúe
+
+    Si más adelante quieres reintroducir enriquecimiento desde movement_event,
+    se añade aquí sin tocar el worker.
+    """
+    try:
+        db.refresh(movement)
+    except Exception:
+        # Si el objeto no está attached, hacemos un merge conservador
+        movement = db.merge(movement)
+        db.flush()
+
+    return movement

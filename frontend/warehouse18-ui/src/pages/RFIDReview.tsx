@@ -84,6 +84,16 @@ type LocationOut = {
   is_active: boolean;
 };
 
+type UserOut = {
+  id: number;
+  username: string;
+  full_name: string;
+  email?: string | null;
+  role?: string;
+  department?: string | null;
+  is_active?: boolean;
+};
+
 function fmtDate(v?: string | null) {
   if (!v) return "";
   const d = new Date(v);
@@ -114,9 +124,17 @@ function locationLabel(
   return loc.name || loc.code || "";
 }
 
-function doneByLabel(row: MovementOut) {
+function doneByLabel(row: MovementOut, userMap: Record<number, UserOut>) {
   if (row.user_name && row.user_name.trim() !== "") return row.user_name;
-  if (row.user_id != null) return String(row.user_id);
+
+  if (row.user_id != null) {
+    const user = userMap[row.user_id];
+    if (user) {
+      return user.full_name || user.username || String(row.user_id);
+    }
+    return String(row.user_id);
+  }
+
   return "";
 }
 
@@ -279,6 +297,7 @@ export default function RFIDReviewPage() {
   const [fromSuggestions, setFromSuggestions] = useState<LocationOut[]>([]);
   const [toSuggestions, setToSuggestions] = useState<LocationOut[]>([]);
   const [locationMap, setLocationMap] = useState<Record<number, LocationOut>>({});
+  const [userMap, setUserMap] = useState<Record<number, UserOut>>({});
   const [movementTypeMap, setMovementTypeMap] = useState<Record<number, MovementTypeOut>>({});
 
   const fromDebounceRef = useRef<number | null>(null);
@@ -339,6 +358,37 @@ export default function RFIDReviewPage() {
         r.user_name ?? "",
       ].join("|"),
     }));
+  }
+
+  async function loadUserMap() {
+    try {
+      const pageSize = 200;
+      let currentPage = 1;
+      let totalPages = 1;
+      const next: Record<number, UserOut> = {};
+
+      while (currentPage <= totalPages) {
+        const { data, meta } = await apiGet<PageOut<UserOut>>("/api/users", {
+          page: currentPage,
+          page_size: pageSize,
+        });
+
+        for (const row of data.items) {
+          next[row.id] = row;
+        }
+
+        totalPages =
+          meta.pages && meta.pages > 0
+            ? meta.pages
+            : Math.max(1, Math.ceil((meta.total || 0) / (meta.pageSize || pageSize)));
+
+        currentPage += 1;
+      }
+
+      setUserMap(next);
+    } catch {
+      setUserMap({});
+    }
   }
 
   async function loadLocationMap() {
@@ -499,6 +549,7 @@ export default function RFIDReviewPage() {
     (async () => {
       await loadLocationMap();
       await loadMovementTypes();
+      await loadUserMap();
       await loadMovements(1);
       await loadEvents();
     })();
@@ -928,7 +979,7 @@ export default function RFIDReviewPage() {
                     </td>
 
                     <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                      {doneByLabel(r)}
+                      {doneByLabel(r,userMap)}
                     </td>
 
                     <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
