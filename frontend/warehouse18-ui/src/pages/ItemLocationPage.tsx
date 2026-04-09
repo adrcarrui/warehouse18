@@ -46,6 +46,11 @@ function extractAisleNumber(value?: string | null): number | null {
 
   const v = value.toUpperCase();
 
+  // 👉 CASO AISLE 0 (ALMACÉN)
+  if (v.includes("ALMACEN 18") || v.includes("ALMACÉN 18")) {
+    return 0;
+  }
+
   let match = v.match(/W18-AISLE\s*([1-6])/);
   if (match) return Number(match[1]);
 

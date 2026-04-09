@@ -92,7 +92,10 @@ export function WarehouseMapReal({
   activeAisle,
   showAll = false,
 }: WarehouseMapRealProps) {
-  const activeMarker = activeAisle ? AISLE_MARKERS[activeAisle] : null;
+const activeMarker =
+  activeAisle !== null && activeAisle !== undefined
+    ? AISLE_MARKERS[activeAisle]
+    : null;
 
   return (
     <div className="w-full rounded-xl border border-zinc-200 bg-white p-4">

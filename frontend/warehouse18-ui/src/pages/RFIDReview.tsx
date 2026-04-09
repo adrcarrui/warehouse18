@@ -104,22 +104,20 @@ function toNumberOrZero(v: string) {
   return Number.isFinite(n) ? n : 0;
 }
 
-function locationLabel(locationId?: number | null, locationMap?: Record<number, LocationOut>) {
+function locationLabel(
+  locationId?: number | null,
+  locationMap?: Record<number, LocationOut>
+) {
   if (locationId == null) return "";
   const loc = locationMap?.[locationId];
-  return loc?.name || `${locationId}`;
+  if (!loc) return "";
+  return loc.name || loc.code || "";
 }
 
 function doneByLabel(row: MovementOut) {
   if (row.user_name && row.user_name.trim() !== "") return row.user_name;
-  if (row.mysim_user_id != null) return String(row.mysim_user_id);
   if (row.user_id != null) return String(row.user_id);
   return "";
-}
-
-function quantityLabel(row: MovementOut) {
-  if (row.quantity == null || row.quantity === "") return "1";
-  return String(row.quantity);
 }
 
 function sourceLabel(row: MovementOut, locationMap: Record<number, LocationOut>) {
@@ -160,6 +158,38 @@ function movementTypeClassName(
   return "text-black";
 }
 
+function resolveLocationIdFromText(
+  text: string,
+  currentId: number | null,
+  locationMap: Record<number, LocationOut>
+): number | null {
+  if (currentId != null) return currentId;
+
+  const raw = text.trim();
+  if (!raw) return null;
+
+  const upper = raw.toUpperCase();
+
+  for (const loc of Object.values(locationMap)) {
+    if ((loc.code || "").trim().toUpperCase() === upper) {
+      return loc.id;
+    }
+  }
+
+  for (const loc of Object.values(locationMap)) {
+    if ((loc.name || "").trim().toUpperCase() === upper) {
+      return loc.id;
+    }
+  }
+
+  const asNumber = Number(raw);
+  if (Number.isFinite(asNumber) && locationMap[asNumber]) {
+    return asNumber;
+  }
+
+  return null;
+}
+
 type LocationAutocompleteProps = {
   label: string;
   valueText: string;
@@ -192,10 +222,8 @@ function LocationAutocomplete({
               onClick={() => onSelect(loc)}
               className="block w-full border-b border-zinc-100 px-3 py-2 text-left text-sm hover:bg-zinc-50"
             >
-              <div className="font-medium text-black">{loc.name}</div>
-              <div className="text-xs text-zinc-500">
-                #{loc.id} • {loc.code} • {loc.type}
-              </div>
+              <div className="font-medium text-black">{loc.name || loc.code}</div>
+              <div className="text-xs text-zinc-500">{loc.type}</div>
             </button>
           ))}
         </div>
@@ -256,6 +284,16 @@ export default function RFIDReviewPage() {
   const fromDebounceRef = useRef<number | null>(null);
   const toDebounceRef = useRef<number | null>(null);
 
+  const movementRowsRef = useRef<MovementOut[]>([]);
+  const movementMetaRef = useRef<PageMeta>({
+    page: 1,
+    pageSize: 25,
+    total: 0,
+    pages: 0,
+    link: null,
+  });
+  const movementPageRef = useRef<number>(1);
+
   const reviewerId = useMemo(() => toNumberOrZero(reviewerUserId), [reviewerUserId]);
 
   const movementQuery = useMemo(() => {
@@ -263,6 +301,45 @@ export default function RFIDReviewPage() {
   }, [movementItemKeyFilter, movementUserFilter]);
 
   const [editingQty, setEditingQty] = useState<Record<number, string>>({});
+
+  useEffect(() => {
+    movementRowsRef.current = movementRows;
+  }, [movementRows]);
+
+  useEffect(() => {
+    movementMetaRef.current = movementMeta;
+  }, [movementMeta]);
+
+  useEffect(() => {
+    movementPageRef.current = movementPage;
+  }, [movementPage]);
+
+  function movementSnapshot(rows: MovementOut[]) {
+    return rows.map((r) => ({
+      id: r.id,
+      movement_type_id: r.movement_type_id,
+      from_location_id: r.from_location_id ?? null,
+      to_location_id: r.to_location_id ?? null,
+      quantity: r.quantity == null ? null : String(r.quantity),
+      review_status: r.review_status,
+      notes: r.notes ?? "",
+      item_key: r.item_key ?? "",
+      user_id: r.user_id ?? null,
+      user_name: r.user_name ?? "",
+      updated_like: [
+        r.id,
+        r.movement_type_id,
+        r.from_location_id ?? null,
+        r.to_location_id ?? null,
+        r.quantity == null ? null : String(r.quantity),
+        r.review_status,
+        r.notes ?? "",
+        r.item_key ?? "",
+        r.user_id ?? null,
+        r.user_name ?? "",
+      ].join("|"),
+    }));
+  }
 
   async function loadLocationMap() {
     try {
@@ -319,9 +396,19 @@ export default function RFIDReviewPage() {
     return data.items;
   }
 
-  async function loadMovements(p: number) {
-    setLoadingMovements(true);
-    setErr(null);
+  async function loadMovements(
+    p: number,
+    options?: { silent?: boolean }
+  ) {
+    const silent = options?.silent ?? false;
+
+    if (!silent) {
+      setLoadingMovements(true);
+    }
+
+    if (!silent) {
+      setErr(null);
+    }
 
     try {
       const { data, meta } = await apiGet<PageOut<MovementOut>>("/api/movements", {
@@ -349,13 +436,34 @@ export default function RFIDReviewPage() {
         );
       }
 
-      setMovementRows(items);
-      setMovementMeta(meta);
-      setMovementPage(p);
+      const prevRows = movementRowsRef.current;
+      const prevMeta = movementMetaRef.current;
+      const prevPage = movementPageRef.current;
+
+      const prevSnapshot = JSON.stringify(movementSnapshot(prevRows));
+      const nextSnapshot = JSON.stringify(movementSnapshot(items));
+
+      const metaChanged =
+        prevMeta.page !== meta.page ||
+        prevMeta.pageSize !== meta.pageSize ||
+        prevMeta.total !== meta.total ||
+        prevMeta.pages !== meta.pages;
+
+      if (prevSnapshot !== nextSnapshot || metaChanged || prevPage !== p) {
+        setMovementRows(items);
+        setMovementMeta(meta);
+        setMovementPage(p);
+      }
     } catch (e: any) {
-      setErr(e?.message ?? String(e));
+      if (!silent) {
+        setErr(e?.message ?? String(e));
+      } else {
+        console.error("Silent movement refresh failed:", e);
+      }
     } finally {
-      setLoadingMovements(false);
+      if (!silent) {
+        setLoadingMovements(false);
+      }
     }
   }
 
@@ -440,6 +548,27 @@ export default function RFIDReviewPage() {
     };
   }, [locToText, locationEditorOpen]);
 
+  useEffect(() => {
+    if (locationEditorOpen) return;
+
+    const intervalId = window.setInterval(() => {
+      loadMovements(movementPageRef.current, { silent: true });
+    }, 8000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    locationEditorOpen,
+    movementQuery,
+    movementDateFromFilter,
+    movementDateToFilter,
+    movementSourceFilter,
+    movementDestinationFilter,
+    locationMap,
+  ]);
+
   function currentQtyValue(row: MovementOut, editingQty: Record<number, string>) {
     if (editingQty[row.id] != null) return editingQty[row.id];
     if (row.quantity == null || row.quantity === "") return "1";
@@ -450,16 +579,23 @@ export default function RFIDReviewPage() {
     setEditingMovement(row);
     setLocFromId(row.from_location_id ?? null);
     setLocToId(row.to_location_id ?? null);
+
     setLocFromText(
-      row.from_location_id
-        ? locationMap[row.from_location_id]?.name || String(row.from_location_id)
+      row.from_location_id != null
+        ? locationMap[row.from_location_id]?.name ||
+            locationMap[row.from_location_id]?.code ||
+            ""
         : ""
     );
+
     setLocToText(
-      row.to_location_id
-        ? locationMap[row.to_location_id]?.name || String(row.to_location_id)
+      row.to_location_id != null
+        ? locationMap[row.to_location_id]?.name ||
+            locationMap[row.to_location_id]?.code ||
+            ""
         : ""
     );
+
     setFromSuggestions([]);
     setToSuggestions([]);
     setLocationEditorOpen(true);
@@ -481,15 +617,29 @@ export default function RFIDReviewPage() {
     setErr(null);
 
     try {
+      const resolvedFromId = resolveLocationIdFromText(locFromText, locFromId, locationMap);
+      const resolvedToId = resolveLocationIdFromText(locToText, locToId, locationMap);
+
+      if (locFromText.trim() !== "" && resolvedFromId == null) {
+        setErr(`Source location not found: ${locFromText}`);
+        return;
+      }
+
+      if (locToText.trim() !== "" && resolvedToId == null) {
+        setErr(`Destination location not found: ${locToText}`);
+        return;
+      }
+
       const payload: MovementLocationsUpdateIn = {
-        from_location_id: locFromId,
-        to_location_id: locToId,
+        from_location_id: resolvedFromId,
+        to_location_id: resolvedToId,
       };
 
       await apiJson("PATCH", `/api/movements/${editingMovement.id}/locations`, payload);
+
       closeLocationEditor();
       await loadLocationMap();
-      await loadMovements(movementPage);
+      await loadMovements(movementPageRef.current);
       await loadEvents();
     } catch (e: any) {
       setErr(e?.message ?? String(e));
@@ -511,7 +661,7 @@ export default function RFIDReviewPage() {
         quantity: qty,
       });
 
-      await loadMovements(movementPage);
+      await loadMovements(movementPageRef.current);
 
       setEditingQty((prev) => {
         const next = { ...prev };
@@ -535,7 +685,7 @@ export default function RFIDReviewPage() {
         note: "Validated manually",
       };
       await apiPost(`/api/movements/${row.id}/confirm`, payload);
-      await loadMovements(movementPage);
+      await loadMovements(movementPageRef.current);
       await loadEvents();
     } catch (e: any) {
       setErr(e?.message ?? String(e));
@@ -552,7 +702,7 @@ export default function RFIDReviewPage() {
         note: movementRejectNote.trim() || "Rejected manually",
       };
       await apiPost(`/api/movements/${row.id}/reject`, payload);
-      await loadMovements(movementPage);
+      await loadMovements(movementPageRef.current);
       await loadEvents();
     } catch (e: any) {
       setErr(e?.message ?? String(e));
@@ -605,11 +755,6 @@ export default function RFIDReviewPage() {
           <Button variant="outline" onClick={() => loadMovements(1)} disabled={loadingMovements}>
             Reload movements
           </Button>
-          {/*
-          <Button variant="outline" onClick={() => loadEvents()} disabled={loadingEvents}>
-            Reload events
-          </Button>
-          */}
         </div>
       }
     >
@@ -619,38 +764,7 @@ export default function RFIDReviewPage() {
             Error: {err}
           </div>
         )}
-        {/*
-        <div className="rounded-xl border border-zinc-200 bg-white p-4">
-          <div className="grid gap-3 md:grid-cols-3">
-            <div>
-              <div className="mb-1 text-xs font-semibold text-zinc-700">Reviewer User ID</div>
-              <Input
-                value={reviewerUserId}
-                onChange={(e) => setReviewerUserId(e.target.value)}
-                placeholder="Reviewer user id"
-              />
-            </div>
 
-            <div>
-              <div className="mb-1 text-xs font-semibold text-zinc-700">Movement Reject Note</div>
-              <Input
-                value={movementRejectNote}
-                onChange={(e) => setMovementRejectNote(e.target.value)}
-                placeholder="Invalid reading or discarded movement"
-              />
-            </div>
-
-            <div>
-              <div className="mb-1 text-xs font-semibold text-zinc-700">Event Reject Note</div>
-              <Input
-                value={eventRejectNote}
-                onChange={(e) => setEventRejectNote(e.target.value)}
-                placeholder="Incident reviewed and discarded"
-              />
-            </div>
-          </div>
-        </div>
-          */}
         <div className="rounded-xl border border-zinc-200 bg-white">
           <div className="border-b border-zinc-200 px-4 py-3">
             <div className="text-sm font-semibold text-zinc-900">Pending Movements</div>
@@ -902,192 +1016,7 @@ export default function RFIDReviewPage() {
             </div>
           </div>
         </div>
-        {/*
-        <div className="rounded-xl border border-zinc-200 bg-white">
-          <div className="border-b border-zinc-200 px-4 py-3">
-            <div className="text-sm font-semibold text-zinc-900">Pending RFID Events</div>
-            <div className="mt-1 text-xs text-zinc-500">
-              Unusual RFID cases without associated movement
-            </div>
-          </div>
 
-          <div className="relative max-h-[750px] overflow-auto bg-white">
-            <table className="min-w-full border-separate border-spacing-0 [table-layout:fixed]">
-              <thead>
-                <tr>
-                  {[
-                    "ID",
-                    "Seen At",
-                    "Event Type",
-                    "Reason",
-                    "EPC",
-                    "Reader",
-                    "Antenna",
-                    "Door",
-                    "Zone",
-                    "Role",
-                    "Payload",
-                    "Actions",
-                  ].map((h) => (
-                    <th
-                      key={h}
-                      className="sticky top-0 z-30 whitespace-nowrap border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-left text-xs font-semibold text-zinc-700"
-                    >
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-
-                <tr>
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  />
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  />
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  >
-                    <Input
-                      value={eventTypeFilter}
-                      onChange={(e) => setEventTypeFilter(e.target.value)}
-                      placeholder="Event type…"
-                    />
-                  </th>
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  />
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  >
-                    <Input
-                      value={eventEpcFilter}
-                      onChange={(e) => setEventEpcFilter(e.target.value)}
-                      placeholder="EPC…"
-                    />
-                  </th>
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  />
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  />
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  >
-                    <Input
-                      value={eventDoorFilter}
-                      onChange={(e) => setEventDoorFilter(e.target.value)}
-                      placeholder="Door…"
-                    />
-                  </th>
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  />
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  />
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  />
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  >
-                    <div className="flex justify-end">
-                      <Button variant="outline" onClick={() => loadEvents()} disabled={loadingEvents}>
-                        Search
-                      </Button>
-                    </div>
-                  </th>
-                </tr>
-              </thead>
-
-              <tbody>
-                {eventRows.map((r) => (
-                  <tr key={r.id} className="hover:bg-zinc-50">
-                    <td className="border-b border-zinc-100 px-3 py-2 text-sm font-medium text-black">
-                      {r.id}
-                    </td>
-                    <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                      {fmtDate(r.seen_at || r.created_at)}
-                    </td>
-                    <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                      {r.event_type}
-                    </td>
-                    <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                      {r.reason || ""}
-                    </td>
-                    <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                      {r.epc || ""}
-                    </td>
-                    <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                      {r.reader_id || ""}
-                    </td>
-                    <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                      {r.antenna ?? ""}
-                    </td>
-                    <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                      {r.door_id || ""}
-                    </td>
-                    <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                      {r.zone_id || ""}
-                    </td>
-                    <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                      {r.zone_role || ""}
-                    </td>
-                    <td className="border-b border-zinc-100 px-3 py-2 text-xs text-black">
-                      <details>
-                        <summary className="cursor-pointer text-zinc-700">View</summary>
-                        <pre className="mt-2 max-w-[360px] whitespace-pre-wrap break-words text-xs text-zinc-700">
-                          {prettyJson(r.payload || {})}
-                        </pre>
-                      </details>
-                    </td>
-                    <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                      <div className="flex flex-wrap gap-2">
-                        <Button variant="primary" size="sm" onClick={() => confirmEvent(r)}>
-                          Confirm
-                        </Button>
-                        <Button variant="danger" size="sm" onClick={() => rejectEvent(r)}>
-                          Reject
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-
-                {!loadingEvents && eventRows.length === 0 && (
-                  <tr>
-                    <td colSpan={12} className="px-3 py-6 text-sm text-zinc-600">
-                      No pending RFID events
-                    </td>
-                  </tr>
-                )}
-
-                {loadingEvents && (
-                  <tr>
-                    <td colSpan={12} className="px-3 py-6 text-sm text-zinc-600">
-                      Loading…
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-          */}
         {locationEditorOpen && editingMovement && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
             <div className="w-full max-w-2xl rounded-2xl border border-zinc-200 bg-white p-5 shadow-xl">
@@ -1116,7 +1045,7 @@ export default function RFIDReviewPage() {
                   }}
                   onSelect={(loc) => {
                     setLocFromId(loc.id);
-                    setLocFromText(loc.name);
+                    setLocFromText(loc.name || loc.code);
                     setFromSuggestions([]);
                   }}
                   suggestions={fromSuggestions}
@@ -1131,7 +1060,7 @@ export default function RFIDReviewPage() {
                   }}
                   onSelect={(loc) => {
                     setLocToId(loc.id);
-                    setLocToText(loc.name);
+                    setLocToText(loc.name || loc.code);
                     setToSuggestions([]);
                   }}
                   suggestions={toSuggestions}
@@ -1142,14 +1071,14 @@ export default function RFIDReviewPage() {
                 <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm">
                   <div className="font-medium text-zinc-800">Selected From</div>
                   <div className="mt-1 text-zinc-600">
-                    {locFromId != null ? `#${locFromId} · ${locFromText}` : "Not selected"}
+                    {locFromId != null ? locFromText : "Not selected"}
                   </div>
                 </div>
 
                 <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm">
                   <div className="font-medium text-zinc-800">Selected To</div>
                   <div className="mt-1 text-zinc-600">
-                    {locToId != null ? `#${locToId} · ${locToText}` : "Not selected"}
+                    {locToId != null ? locToText : "Not selected"}
                   </div>
                 </div>
               </div>

@@ -245,27 +245,27 @@ class MovementOut(ORMBase):
     reference_type: Optional[str] = None
     reference_id: Optional[int] = None
 
-    mysim_user_id: Optional[int] = None
     user_id: Optional[int] = None
-    user_name: Optional[str] = None
-
     created_at: datetime
     notes: Optional[str] = None
 
-    item_key: Optional[str] = None  # denormalized for easier querying
+    item_key: Optional[str] = None
+    mysim_user_id: Optional[int] = None
 
     review_status: str
+    review_note: Optional[str] = None
     reviewed_at: Optional[datetime] = None
     reviewed_by_user_id: Optional[int] = None
-    review_note: Optional[str] = None
+
     mysim_sync_status: str
     mysim_synced_at: Optional[datetime] = None
     mysim_sync_error: Optional[str] = None
     mysim_movement_id: Optional[str] = None
 
-class MovementLocationsUpdateIn(BaseModel):
-    from_location_id: Optional[int] = None
-    to_location_id: Optional[int] = None
+    needs_report: bool
+    report_reason: Optional[str] = None
+    is_preventive: bool
+    rfid_status: Optional[str] = None
 
 class ItemLocationOut(BaseModel):
     item_key: str
@@ -350,3 +350,12 @@ class RFIDEventReviewIn(BaseModel):
 class MovementLocationsUpdateIn(BaseModel):
     from_location_id: Optional[int] = None
     to_location_id: Optional[int] = None
+
+class MovementConfirmIn(BaseModel):
+    reviewed_by_user_id: Optional[int] = None
+    review_note: Optional[str] = None
+
+
+class MovementRejectIn(BaseModel):
+    reviewed_by_user_id: Optional[int] = None
+    review_note: Optional[str] = None

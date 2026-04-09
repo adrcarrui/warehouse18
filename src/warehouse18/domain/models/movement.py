@@ -1,4 +1,4 @@
-from sqlalchemy import Column, BigInteger, Text, DateTime, Numeric, ForeignKey, String, func
+from sqlalchemy import Column, BigInteger, Text, DateTime, Numeric, ForeignKey, String, func, Boolean
 from .base import Base
 from sqlalchemy.orm import relationship
 
@@ -35,6 +35,12 @@ class Movement(Base):
     mysim_synced_at = Column(DateTime(timezone=True), nullable=True)
     mysim_sync_error = Column(Text, nullable=True)
     mysim_movement_id = Column(Text, nullable=True, index=True)
+
+    needs_report = Column(Boolean, nullable=False, default=False)
+    report_reason = Column(Text, nullable=True)
+
+    is_preventive = Column(Boolean, nullable=False, default=False)
+    rfid_status = Column(String(30), nullable=True)
 
     user = relationship("User", foreign_keys=[user_id])
 
