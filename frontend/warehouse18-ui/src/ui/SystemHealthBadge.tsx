@@ -83,7 +83,7 @@ export function SystemHealthBadge(props: { collapsed?: boolean }) {
 
     const id = window.setInterval(() => {
       loadHealth();
-    }, 10000);
+    }, 30*60*1000); // every 30 minutes
 
     return () => window.clearInterval(id);
   }, []);

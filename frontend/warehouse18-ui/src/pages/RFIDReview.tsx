@@ -547,21 +547,22 @@ export default function RFIDReviewPage() {
 
   useEffect(() => {
     (async () => {
-      await loadLocationMap();
-      await loadMovementTypes();
-      await loadUserMap();
+      await Promise.all([
+        loadLocationMap(),
+        loadMovementTypes(),
+        loadUserMap(),
+        loadEvents(),
+      ]);
       await loadMovements(1);
-      await loadEvents();
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
+  {/*useEffect(() => {
     if (Object.keys(locationMap).length > 0) {
       loadMovements(1);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [locationMap]);
+  }, [locationMap]);*/}
 
   useEffect(() => {
     if (!locationEditorOpen) return;
@@ -604,7 +605,7 @@ export default function RFIDReviewPage() {
 
     const intervalId = window.setInterval(() => {
       loadMovements(movementPageRef.current, { silent: true });
-    }, 8000);
+    }, 2000);
 
     return () => {
       window.clearInterval(intervalId);
@@ -1008,14 +1009,16 @@ export default function RFIDReviewPage() {
                         <Button variant="outline" size="sm" onClick={() => openLocationEditor(r)}>
                           Edit locations
                         </Button>
-                        <Button
-                          variant="primary"
-                          size="sm"
-                          onClick={() => confirmMovement(r)}
-                          disabled={confirmingMovementIds.includes(r.id)}
-                        >
-                          {confirmingMovementIds.includes(r.id) ? "Confirming..." : "Confirm"}
-                        </Button>
+                        {r.to_location_id != null && (
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            onClick={() => confirmMovement(r)}
+                            disabled={confirmingMovementIds.includes(r.id)}
+                          >
+                            {confirmingMovementIds.includes(r.id) ? "Confirming..." : "Confirm"}
+                          </Button>
+                        )}
                         <Button variant="danger" size="sm" onClick={() => rejectMovement(r)}>
                           Reject
                         </Button>

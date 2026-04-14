@@ -200,11 +200,7 @@ const pages = useMemo(() => {
     <AppShell
       title="Locations"
       subtitle="Manage locations"
-      actions={
-        <Button variant="primary" onClick={openCreate}>
-          + New location
-        </Button>
-      }
+
     >
       <div className="space-y-4">
         {err && (
