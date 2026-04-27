@@ -10,6 +10,8 @@ import RFIDMonitorPage from "./pages/RFIDMonitorPage";
 import DashboardPage from "./pages/Dashboard";
 import RFIDReviewPage from "./pages/RFIDReview";
 import ItemLocationPage from "./pages/ItemLocationPage";
+import PistolSendEpcPage from "./pages/PistolSendEpcPage";
+import PistolWsTestPage from "./pages/PistolWsTestPage";
 import "./index.css"
 
 
@@ -46,6 +48,8 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         <Route path="/rfid-monitor" element={<RFIDMonitorPage />} />
         <Route path="/rfid-review" element={<RFIDReviewPage/>}/>
         <Route path="/item-location" element={<ItemLocationPage/>}/>
+        <Route path="/pistol/send-epc" element={<PistolSendEpcPage />} />
+        <Route path="/pistol/ws-test" element={<PistolWsTestPage />} />
       </Routes>
     </BrowserRouter>
   //</React.StrictMode>

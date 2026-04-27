@@ -11,6 +11,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Radio,
+  Activity,
 } from "lucide-react";
 import { cn } from "../lib/cn";
 
@@ -26,9 +27,11 @@ const NAV: NavItem[] = [
   { label: "Movements", href: "/movements", icon: ArrowLeftRight },
   { label: "Locations", href: "/locations", icon: MapPin },
   { label: "Users", href: "/users", icon: Users },
-  { label: "RFID Monitor", href: "/rfid-monitor", icon: Radio },
+  { label: "RFID Monitor", href: "/rfid-monitor", icon: Activity },
   { label: "RFID Review", href: "/rfid-review", icon: Radio },
   { label: "Item Location", href: "/item-location", icon: MapPin },
+  { label: "Pistol Send EPC", href: "/pistol/send-epc", icon: Package },
+  { label: "Pistol WS Test", href: "/pistol/ws-test", icon: Package },
   //{ label: "Settings", href: "/settings", icon: Settings },
 ];
 

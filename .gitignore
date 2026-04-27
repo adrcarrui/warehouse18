@@ -49,3 +49,5 @@ frontend/**/.vite/
 *.zip
 *.rar
 *.7z
+
+.tmp_sdk_review/
