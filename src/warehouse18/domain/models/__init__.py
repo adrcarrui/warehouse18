@@ -10,5 +10,23 @@ from .movement_type import  MovementType
 from .movement import Movement
 from .app_setting import AppSetting
 from .rfid_event_log import RfidEventLog
+from .aisle import Aisle
+from .device_group import DeviceGroup, DeviceAlias
 
-__all__ = ["Base", "User", "Location", "Item","Asset","AssetLocation", "StockContainer", "InventoryStock", "MovementType", "Movement", "AppSetting", "RfidEventLog"]
+__all__ = [
+    "Base", 
+    "User", 
+    "Location", 
+    "Item",
+    "Asset",
+    "AssetLocation", 
+    "StockContainer", 
+    "InventoryStock", 
+    "MovementType", 
+    "Movement", 
+    "AppSetting", 
+    "RfidEventLog", 
+    "Aisle", 
+    "DeviceGroup",
+    "DeviceAlias",
+    ]

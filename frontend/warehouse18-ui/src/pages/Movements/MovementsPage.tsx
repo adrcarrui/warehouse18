@@ -1,11 +1,23 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent } from "react";
+import { Minus, Plus } from "lucide-react";
+
 import { AppShell } from "../../app/AppShell";
 import { apiGet } from "../../api";
 import type { PageMeta, PageOut } from "../../api";
 
 import { Button } from "../../ui/Button";
 import { Input } from "../../ui/Input";
-import { Badge } from "../../ui/Badge";
+
+type UserOut = {
+  id: number;
+  username: string;
+  full_name: string;
+  email?: string | null;
+  role?: string;
+  department?: string | null;
+  is_active?: boolean;
+};
 
 type MovementOut = {
   id: number;
@@ -17,9 +29,12 @@ type MovementOut = {
   to_location_id?: number | null;
   user_id?: number | null;
   user_name?: string | null;
+  mysim_user_id?: number | null;
+  mysim_user_name?: string | null;
   created_at: string;
   notes?: string | null;
   mysim_movement_id?: string | null;
+  detected_aisle_id?: number | null;
 };
 
 type MovementTypeOut = {
@@ -35,7 +50,15 @@ type LocationOut = {
   type: string;
   parent_id?: number | null;
   is_active: boolean;
+  aisle_id?: number | null;
+  device_group_id?: number | null;
+  rack_code?: string | null;
+  shelf_code?: string | null;
 };
+
+function errMsg(e: unknown) {
+  return e instanceof Error ? e.message : String(e);
+}
 
 function fmtDate(v?: string | null) {
   if (!v) return "";
@@ -47,6 +70,7 @@ function fmtDate(v?: string | null) {
 function toNumberOrUndefined(v: string): number | undefined {
   const t = v.trim();
   if (!t) return undefined;
+
   const n = Number(t);
   return Number.isFinite(n) ? n : undefined;
 }
@@ -60,10 +84,18 @@ function partToText(m: MovementOut) {
   return m.item_key || (m.item_id != null ? String(m.item_id) : "");
 }
 
-function locationLabel(locationId?: number | null, locationMap?: Record<number, LocationOut>) {
+function locationLabel(
+  locationId?: number | null,
+  locationMap?: Record<number, LocationOut>
+) {
   if (locationId == null) return "";
+
   const loc = locationMap?.[locationId];
-  return loc?.name || String(locationId);
+
+  if (loc?.name) return loc.name;
+  if (loc?.code) return loc.code;
+
+  return String(locationId);
 }
 
 function movementTypeLabel(mt?: MovementTypeOut) {
@@ -78,36 +110,59 @@ function movementTypeLabel(mt?: MovementTypeOut) {
   return mt.name || mt.code;
 }
 
-function userLabel(row: MovementOut) {
-  if (row.user_name && row.user_name.trim() !== "") return row.user_name;
-  if (row.user_id != null) return String(row.user_id);
+function doneByLabel(row: MovementOut, userMap: Record<number, UserOut>) {
+  if (row.user_name && row.user_name.trim() !== "") {
+    return row.user_name;
+  }
+
+  if (row.user_id != null) {
+    const user = userMap[row.user_id];
+
+    if (user) {
+      return user.full_name || user.username || "";
+    }
+  }
+
   return "";
 }
 
-function movementTypeClassName(mt?: MovementTypeOut) {
+function movementTypeBadgeClassName(mt?: MovementTypeOut) {
   const code = (mt?.code || "").toUpperCase();
 
-  if (code === "GI") return "text-red-600 font-semibold";
-  if (code === "GR") return "text-green-600 font-semibold";
-  if (code === "GT") return "text-blue-600 font-semibold";
+  if (code === "GI") {
+    return "border-red-200 bg-red-50 text-red-700";
+  }
 
-  return "text-black";
+  if (code === "GR") {
+    return "border-green-200 bg-green-50 text-green-700";
+  }
+
+  if (code === "GT") {
+    return "border-blue-200 bg-blue-50 text-blue-700";
+  }
+
+  return "border-zinc-200 bg-zinc-50 text-zinc-700";
 }
 
 export default function MovementsPage() {
+  const [dateFilter, setDateFilter] = useState("");
   const [idFilter, setIdFilter] = useState("");
+  const [mysimMovementIdFilter, setMysimMovementIdFilter] = useState("");
   const [movementTypeFilter, setMovementTypeFilter] = useState("");
   const [partFilter, setPartFilter] = useState("");
-  const [fromIdFilter, setFromIdFilter] = useState("");
   const [toIdFilter, setToIdFilter] = useState("");
   const [userIdFilter, setUserIdFilter] = useState("");
   const [notesFilter, setNotesFilter] = useState("");
-  const [mysimMovementIdFilter, setMysimMovementIdFilter] = useState("");
 
+  const [expandedMovementIds, setExpandedMovementIds] = useState<Set<number>>(
+    () => new Set()
+  );
+  const [userMap, setUserMap] = useState<Record<number, UserOut>>({});
   const [mtById, setMtById] = useState<Record<number, MovementTypeOut>>({});
-  const [locationMap, setLocationMap] = useState<Record<number, LocationOut>>({});
+  const [locationMap, setLocationMap] = useState<Record<number, LocationOut>>(
+    {}
+  );
 
-  const [page, setPage] = useState(1);
   const [pageSize] = useState(25);
 
   const [rows, setRows] = useState<MovementOut[]>([]);
@@ -124,27 +179,74 @@ export default function MovementsPage() {
 
   const qCombined = useMemo(() => {
     return [
+      dateFilter.trim(),
       idFilter.trim(),
+      mysimMovementIdFilter.trim(),
       partFilter.trim(),
       notesFilter.trim(),
-      mysimMovementIdFilter.trim(),
     ]
       .filter(Boolean)
       .join(" ");
-  }, [idFilter, partFilter, notesFilter, mysimMovementIdFilter]);
+  }, [
+    dateFilter,
+    idFilter,
+    mysimMovementIdFilter,
+    partFilter,
+    notesFilter,
+  ]);
 
   const pages = useMemo(() => {
     const ps = meta.pageSize || pageSize || 25;
     const t = meta.total || 0;
     const computed = Math.max(1, Math.ceil(t / ps));
+
     return meta.pages && meta.pages > 0 ? meta.pages : computed;
   }, [meta.pages, meta.pageSize, meta.total, pageSize]);
+
+  async function loadUserMap() {
+    try {
+      const pageSize = 200;
+      let currentPage = 1;
+      let totalPages = 1;
+
+      const map: Record<number, UserOut> = {};
+
+      while (currentPage <= totalPages) {
+        const { data, meta } = await apiGet<PageOut<UserOut>>("/api/users", {
+          page: currentPage,
+          page_size: pageSize,
+        });
+
+        for (const user of data.items) {
+          map[user.id] = user;
+        }
+
+        totalPages =
+          meta.pages && meta.pages > 0
+            ? meta.pages
+            : Math.max(
+                1,
+                Math.ceil((meta.total || 0) / (meta.pageSize || pageSize))
+              );
+
+        currentPage += 1;
+      }
+
+      setUserMap(map);
+    } catch {
+      setUserMap({});
+    }
+  }
 
   async function loadMovementTypes() {
     try {
       const { data } = await apiGet<MovementTypeOut[]>("/api/movement-types");
+
       const map: Record<number, MovementTypeOut> = {};
-      for (const mt of data) map[mt.id] = mt;
+      for (const mt of data) {
+        map[mt.id] = mt;
+      }
+
       setMtById(map);
     } catch {
       setMtById({});
@@ -156,22 +258,30 @@ export default function MovementsPage() {
       const pageSize = 200;
       let currentPage = 1;
       let totalPages = 1;
+
       const map: Record<number, LocationOut> = {};
 
       while (currentPage <= totalPages) {
-        const { data, meta } = await apiGet<PageOut<LocationOut>>("/api/locations", {
-          include_inactive: true,
-          page: currentPage,
-          page_size: pageSize,
-        });
+        const { data, meta } = await apiGet<PageOut<LocationOut>>(
+          "/api/locations",
+          {
+            include_inactive: true,
+            page: currentPage,
+            page_size: pageSize,
+          }
+        );
 
         for (const loc of data.items) {
           map[loc.id] = loc;
         }
 
-        totalPages = meta.pages && meta.pages > 0
-          ? meta.pages
-          : Math.max(1, Math.ceil((meta.total || 0) / (meta.pageSize || pageSize)));
+        totalPages =
+          meta.pages && meta.pages > 0
+            ? meta.pages
+            : Math.max(
+                1,
+                Math.ceil((meta.total || 0) / (meta.pageSize || pageSize))
+              );
 
         currentPage += 1;
       }
@@ -182,38 +292,47 @@ export default function MovementsPage() {
     }
   }
 
+  function movementTypeFilterId() {
+    const search = movementTypeFilter.trim().toLowerCase();
+
+    if (!search) return undefined;
+
+    const found = Object.values(mtById).find((mt) => {
+      const code = (mt.code || "").toLowerCase();
+      const label = movementTypeLabel(mt).toLowerCase();
+      const rawName = (mt.name || "").toLowerCase();
+
+      return (
+        code.includes(search) ||
+        label.includes(search) ||
+        rawName.includes(search)
+      );
+    });
+
+    return found?.id;
+  }
+
   async function load(p: number) {
     setLoading(true);
     setErr(null);
+
     try {
-      const { data, meta } = await apiGet<PageOut<MovementOut>>("/api/movements", {
-        q: qCombined || undefined,
-        movement_type_id: (() => {
-          const search = movementTypeFilter.trim().toLowerCase();
-          if (!search) return undefined;
-
-          const found = Object.values(mtById).find((mt) => {
-            const code = (mt.code || "").toLowerCase();
-            const label = movementTypeLabel(mt).toLowerCase();
-            const rawName = (mt.name || "").toLowerCase();
-
-            return code.includes(search) || label.includes(search) || rawName.includes(search);
-          });
-
-          return found?.id;
-        })(),
-        from_location_id: toNumberOrUndefined(fromIdFilter),
-        to_location_id: toNumberOrUndefined(toIdFilter),
-        user_id: toNumberOrUndefined(userIdFilter),
-        page: p,
-        page_size: pageSize,
-      });
+      const { data, meta } = await apiGet<PageOut<MovementOut>>(
+        "/api/movements",
+        {
+          q: qCombined || undefined,
+          movement_type_id: movementTypeFilterId(),
+          to_location_id: toNumberOrUndefined(toIdFilter),
+          user_id: toNumberOrUndefined(userIdFilter),
+          page: p,
+          page_size: pageSize,
+        }
+      );
 
       setRows(data.items);
       setMeta(meta);
-      setPage(p);
-    } catch (e: any) {
-      setErr(e?.message ?? String(e));
+    } catch (e: unknown) {
+      setErr(errMsg(e));
     } finally {
       setLoading(false);
     }
@@ -223,8 +342,10 @@ export default function MovementsPage() {
     (async () => {
       await loadMovementTypes();
       await loadAllLocations();
+      await loadUserMap();
       await load(1);
     })();
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -236,56 +357,77 @@ export default function MovementsPage() {
       didMountRef.current = true;
       return;
     }
-    if (debounceRef.current) window.clearTimeout(debounceRef.current);
-    debounceRef.current = window.setTimeout(() => load(1), 300);
+
+    if (debounceRef.current) {
+      window.clearTimeout(debounceRef.current);
+    }
+
+    debounceRef.current = window.setTimeout(() => {
+      void load(1);
+    }, 300);
+
     return () => {
-      if (debounceRef.current) window.clearTimeout(debounceRef.current);
+      if (debounceRef.current) {
+        window.clearTimeout(debounceRef.current);
+      }
     };
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     qCombined,
     movementTypeFilter,
-    fromIdFilter,
     toIdFilter,
     userIdFilter,
-    notesFilter,
-    mysimMovementIdFilter,
     Object.keys(mtById).length,
   ]);
 
-  function onFilterKeyDown(e: React.KeyboardEvent) {
+  function onFilterKeyDown(e: KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter") {
-      if (debounceRef.current) window.clearTimeout(debounceRef.current);
-      load(1);
+      if (debounceRef.current) {
+        window.clearTimeout(debounceRef.current);
+      }
+
+      void load(1);
     }
   }
 
   function resetFilters() {
+    setDateFilter("");
     setIdFilter("");
+    setMysimMovementIdFilter("");
     setMovementTypeFilter("");
     setPartFilter("");
-    setFromIdFilter("");
     setToIdFilter("");
     setUserIdFilter("");
     setNotesFilter("");
-    setMysimMovementIdFilter("");
-    if (debounceRef.current) window.clearTimeout(debounceRef.current);
-    load(1);
+
+    if (debounceRef.current) {
+      window.clearTimeout(debounceRef.current);
+    }
   }
 
-  const FILTER_ROW_TOP = "32px";
+  function toggleMovementDetails(movementId: number) {
+    setExpandedMovementIds((prev) => {
+      const next = new Set(prev);
+
+      if (next.has(movementId)) {
+        next.delete(movementId);
+      } else {
+        next.add(movementId);
+      }
+
+      return next;
+    });
+  }
+
+  const FILTER_ROW_TOP = "33px";
+  const columnCount = 9;
 
   return (
     <AppShell
       title="Movements"
       subtitle="Movements history"
-      actions={
-        <div className="flex items-center gap-2">
-          <Button type="button" variant="outline" onClick={resetFilters} disabled={loading}>
-            Reset
-          </Button>
-        </div>
-      }
+
     >
       <div className="space-y-4">
         {err && (
@@ -296,23 +438,23 @@ export default function MovementsPage() {
 
         <div className="rounded-xl border border-zinc-200 bg-white">
           <div className="relative max-h-[750px] overflow-auto bg-white">
-            <table className="min-w-full border-separate border-spacing-0 [table-layout:fixed]">
+            <table className="min-w-[1100px] border-separate border-spacing-0 [table-layout:fixed]">
               <thead>
                 <tr>
                   {[
-                    "ID / MySim",
-                    "Type",
-                    "Part",
-                    "Qty",
-                    "From",
-                    "To",
-                    "DoneBy",
-                    "Created",
-                    "Notes",
+                    "Date",
+                    "Mov ID",
+                    "mySim ID",
+                    "Mov Type",
+                    "Part ID",
+                    "Quantity",
+                    "Destination",
+                    "Done by",
+                    "",
                   ].map((h) => (
                     <th
-                      key={h}
-                      className="sticky top-0 z-30 whitespace-nowrap border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-left text-xs font-semibold text-zinc-700"
+                      key={h || "details"}
+                      className="sticky top-0 z-30 whitespace-nowrap border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-left text-sm font-semibold text-zinc-700"
                     >
                       {h}
                     </th>
@@ -325,10 +467,36 @@ export default function MovementsPage() {
                     style={{ top: FILTER_ROW_TOP }}
                   >
                     <Input
+                      value={dateFilter}
+                      onChange={(e) => setDateFilter(e.target.value)}
+                      onKeyDown={onFilterKeyDown}
+                      placeholder="Date…"
+                    />
+                  </th>
+
+                  <th
+                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
+                    style={{ top: FILTER_ROW_TOP }}
+                  >
+                    <Input
                       value={idFilter}
                       onChange={(e) => setIdFilter(e.target.value)}
                       onKeyDown={onFilterKeyDown}
-                      placeholder="id…"
+                      placeholder="Mov id…"
+                    />
+                  </th>
+
+                  <th
+                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
+                    style={{ top: FILTER_ROW_TOP }}
+                  >
+                    <Input
+                      value={mysimMovementIdFilter}
+                      onChange={(e) =>
+                        setMysimMovementIdFilter(e.target.value)
+                      }
+                      onKeyDown={onFilterKeyDown}
+                      placeholder="mySim id…"
                     />
                   </th>
 
@@ -340,7 +508,7 @@ export default function MovementsPage() {
                       value={movementTypeFilter}
                       onChange={(e) => setMovementTypeFilter(e.target.value)}
                       onKeyDown={onFilterKeyDown}
-                      placeholder="movement type…"
+                      placeholder="GR / GI / GT…"
                     />
                   </th>
 
@@ -352,7 +520,7 @@ export default function MovementsPage() {
                       value={partFilter}
                       onChange={(e) => setPartFilter(e.target.value)}
                       onKeyDown={onFilterKeyDown}
-                      placeholder="part…"
+                      placeholder="Part ID…"
                     />
                   </th>
 
@@ -366,22 +534,10 @@ export default function MovementsPage() {
                     style={{ top: FILTER_ROW_TOP }}
                   >
                     <Input
-                      value={fromIdFilter}
-                      onChange={(e) => setFromIdFilter(e.target.value)}
-                      onKeyDown={onFilterKeyDown}
-                      placeholder="from_location_id…"
-                    />
-                  </th>
-
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  >
-                    <Input
                       value={toIdFilter}
                       onChange={(e) => setToIdFilter(e.target.value)}
                       onKeyDown={onFilterKeyDown}
-                      placeholder="to_location_id…"
+                      placeholder="Destination id…"
                     />
                   </th>
 
@@ -393,25 +549,22 @@ export default function MovementsPage() {
                       value={userIdFilter}
                       onChange={(e) => setUserIdFilter(e.target.value)}
                       onKeyDown={onFilterKeyDown}
-                      placeholder="user_id…"
+                      placeholder="user id…"
                     />
                   </th>
 
                   <th
                     className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
                     style={{ top: FILTER_ROW_TOP }}
-                  />
-
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
                   >
-                    <Input
-                      value={notesFilter}
-                      onChange={(e) => setNotesFilter(e.target.value)}
-                      onKeyDown={onFilterKeyDown}
-                      placeholder="notes / mysim id…"
-                    />
+                    <Button
+            type="button"
+            variant="outline"
+            onClick={resetFilters}
+            disabled={loading}
+          >
+            Reset
+          </Button>
                   </th>
                 </tr>
               </thead>
@@ -419,56 +572,180 @@ export default function MovementsPage() {
               <tbody>
                 {rows.map((m) => {
                   const mt = mtById[m.movement_type_id];
+                  const isExpanded = expandedMovementIds.has(m.id);
 
                   return (
-                    <tr key={m.id} className="hover:bg-zinc-50">
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                        <div className="font-medium tabular-nums">{m.id}</div>
-                        {m.mysim_movement_id ? (
-                          <div className="text-xs text-zinc-500">{m.mysim_movement_id}</div>
-                        ) : null}
-                      </td>
+                    <Fragment key={m.id}>
+                      <tr className="hover:bg-zinc-50">
+                        <td className="border-b border-zinc-100 px-3 py-2 text-sm text-zinc-600 text-center">
+                          {fmtDate(m.created_at)}
+                        </td>
 
-                      <td
-                        className={`border-b border-zinc-100 px-3 py-2 text-sm ${movementTypeClassName(mt)}`}
-                      >
-                        {mt ? movementTypeLabel(mt) : `#${m.movement_type_id}`}
-                      </td>
+                        <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black text-center">
+                          <span className="inline-flex w-fit items-center rounded-full bg-blue-900 px-2 py-1 text-xs font-semibold text-white">
+                            #{m.id}
+                          </span>
+                        </td>
 
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                        {partToText(m)}
-                      </td>
+                        <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black text-center">
+                          {m.mysim_movement_id ? (
+                            <span className="font-medium text-zinc-900">
+                              {m.mysim_movement_id}
+                            </span>
+                          ) : (
+                            <span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-700">
+                              Not synchronized
+                            </span>
+                          )}
+                        </td>
 
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">
-                        {qtyToText(m.quantity)}
-                      </td>
+                        <td className="border-b border-zinc-100 px-3 py-2 text-sm text-center">
+                          <span
+                            className={`inline-flex rounded-full border px-2 py-1 text-xs font-semibold ${movementTypeBadgeClassName(
+                              mt
+                            )}`}
+                          >
+                            {mt
+                              ? movementTypeLabel(mt)
+                              : `#${m.movement_type_id}`}
+                          </span>
+                        </td>
 
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                        {locationLabel(m.from_location_id, locationMap)}
-                      </td>
+                        <td className="border-b border-zinc-100 px-3 py-2 text-sm font-medium text-zinc-900 text-center">
+                          {partToText(m) || "—"}
+                        </td>
 
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                        {locationLabel(m.to_location_id, locationMap)}
-                      </td>
+                        <td className="border-b border-zinc-100 px-3 py-2 text-sm tabular-nums text-zinc-900 text-center">
+                          {qtyToText(m.quantity)}
+                        </td>
 
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black tabular-nums">
-                        {userLabel(m)}
-                      </td>
+                        <td className="border-b border-zinc-100 px-3 py-2 text-sm text-zinc-900 text-center">
+                          {locationLabel(m.to_location_id, locationMap) ||
+                            "No destination"}
+                        </td>
 
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-zinc-600">
-                        {fmtDate(m.created_at)}
-                      </td>
+                        <td className="border-b border-zinc-100 px-3 py-2 text-sm text-zinc-900 text-center">
+                          {doneByLabel(m, userMap) || "No user"}
+                        </td>
 
-                      <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                        {m.notes ?? ""}
-                      </td>
-                    </tr>
+                        <td className="border-b border-zinc-100 px-3 py-2 text-sm text-zinc-900 text-center">
+                          <button
+                            type="button"
+                            onClick={() => toggleMovementDetails(m.id)}
+                            title={
+                              isExpanded
+                                ? "Hide movement details"
+                                : "Show movement details"
+                            }
+                            className="mx-auto flex h-8 w-8 items-center justify-center rounded-lg border border-blue-600 bg-blue-600 text-white hover:bg-blue-700"
+                          >
+                            {isExpanded ? (
+                              <Minus className="h-4 w-4" />
+                            ) : (
+                              <Plus className="h-4 w-4" />
+                            )}
+
+                            <span className="sr-only">
+                              {isExpanded
+                                ? "Hide movement details"
+                                : "Show movement details"}
+                            </span>
+                          </button>
+                        </td>
+                      </tr>
+
+                      {isExpanded && (
+                        <tr>
+                          <td
+                            colSpan={columnCount}
+                            className="border-b border-zinc-100 bg-zinc-50 px-3 py-3"
+                          >
+                            <div className="rounded-xl border border-zinc-200 bg-white p-4">
+                              <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                                Movement details
+                              </div>
+
+                              <div className="grid gap-3 text-sm md:grid-cols-3">
+                                <div className="md:col-span-3">
+                                  <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                                    Notes
+                                  </div>
+                                  <div className="mt-1 rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-zinc-900">
+                                    {m.notes || "No notes"}
+                                  </div>
+                                </div>
+
+                                <div>
+                                  <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                                    Source location
+                                  </div>
+                                  <div className="mt-1 font-medium text-zinc-900">
+                                    {locationLabel(
+                                      m.from_location_id,
+                                      locationMap
+                                    ) || "No source"}
+                                  </div>
+                                </div>
+
+                                <div>
+                                  <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                                    Destination ID
+                                  </div>
+                                  <div className="mt-1 font-medium text-zinc-900">
+                                    {m.to_location_id ?? "Not set"}
+                                  </div>
+                                </div>
+
+                                <div>
+                                  <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                                    Source ID
+                                  </div>
+                                  <div className="mt-1 font-medium text-zinc-900">
+                                    {m.from_location_id ?? "Not set"}
+                                  </div>
+                                </div>
+
+                                <div>
+                                  <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                                    Internal item ID
+                                  </div>
+                                  <div className="mt-1 font-medium text-zinc-900">
+                                    {m.item_id ?? "Not set"}
+                                  </div>
+                                </div>
+
+                                <div>
+                                  <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                                    User ID
+                                  </div>
+                                  <div className="mt-1 font-medium text-zinc-900">
+                                    {m.user_id ?? "No user"}
+                                  </div>
+                                </div>
+
+                                <div>
+                                  <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                                    Detected aisle ID
+                                  </div>
+                                  <div className="mt-1 font-medium text-zinc-900">
+                                    {m.detected_aisle_id ?? "Not detected"}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   );
                 })}
 
                 {!loading && rows.length === 0 && (
                   <tr>
-                    <td colSpan={9} className="px-3 py-6 text-sm text-zinc-600">
+                    <td
+                      colSpan={columnCount}
+                      className="px-3 py-6 text-sm text-zinc-600"
+                    >
                       No results
                     </td>
                   </tr>
@@ -476,8 +753,11 @@ export default function MovementsPage() {
 
                 {loading && (
                   <tr>
-                    <td colSpan={9} className="px-3 py-6 text-sm text-zinc-600">
-                      Loading…
+                    <td
+                      colSpan={columnCount}
+                      className="px-3 py-6 text-sm text-zinc-600"
+                    >
+                      Loading movements…
                     </td>
                   </tr>
                 )}
@@ -488,10 +768,14 @@ export default function MovementsPage() {
 
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-sm text-zinc-600">
-            Total <span className="font-semibold text-zinc-900">{meta.total}</span> • Page{" "}
+            Total{" "}
+            <span className="font-semibold text-zinc-900">{meta.total}</span> •
+            Page{" "}
             <span className="font-semibold text-zinc-900">{meta.page}</span> /{" "}
             <span className="font-semibold text-zinc-900">{pages}</span> • Size{" "}
-            <span className="font-semibold text-zinc-900">{meta.pageSize}</span>
+            <span className="font-semibold text-zinc-900">
+              {meta.pageSize}
+            </span>
           </div>
 
           <div className="flex items-center gap-2">
@@ -502,6 +786,7 @@ export default function MovementsPage() {
             >
               Prev
             </Button>
+
             <Button
               type="button"
               onClick={() => load(meta.page + 1)}
@@ -510,10 +795,6 @@ export default function MovementsPage() {
               Next
             </Button>
           </div>
-        </div>
-
-        <div>
-          <Badge>{rows.length} rows</Badge>
         </div>
       </div>
     </AppShell>

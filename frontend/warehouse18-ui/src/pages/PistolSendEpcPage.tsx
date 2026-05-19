@@ -52,15 +52,13 @@ export default function PistolSendEpcPage() {
 
     try {
       const data = await apiJson<SendTargetEpcResponse>(
+        "POST",
         "/api/rfid/pistol/send-target-epc",
         {
-          method: "POST",
-          body: JSON.stringify({
-            device_id: cleanDeviceId,
-            epc: cleanEpc,
-            mode,
-            item_key: cleanItemKey || null,
-          }),
+          device_id: cleanDeviceId,
+          epc: cleanEpc,
+          mode,
+          item_key: cleanItemKey || null,
         }
       );
 

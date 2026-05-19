@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
+import { CheckCircle2, XCircle, Minus, Plus, Save } from "lucide-react";
 import { apiGet, apiPost, apiJson } from "../api";
 import type { PageMeta, PageOut } from "../api";
 import { AppShell } from "../app/AppShell";
@@ -20,6 +22,7 @@ type MovementOut = {
   notes?: string | null;
   item_key?: string | null;
   mysim_user_id?: number | null;
+  detected_aisle_id?: number | null;
   review_status: string;
   reviewed_at?: string | null;
   reviewed_by_user_id?: number | null;
@@ -40,11 +43,6 @@ type MovementTypeOut = {
 type MovementReviewIn = {
   reviewed_by_user_id: number;
   note?: string | null;
-};
-
-type MovementLocationsUpdateIn = {
-  from_location_id?: number | null;
-  to_location_id?: number | null;
 };
 
 type RFIDEventOut = {
@@ -82,6 +80,19 @@ type LocationOut = {
   type: string;
   parent_id?: number | null;
   is_active: boolean;
+  aisle_id?: number | null;
+  device_group_id?: number | null;
+  rack_code?: string | null;
+  shelf_code?: string | null;
+  is_warehouse_location?: boolean;
+};
+
+type CandidateLocationsOut = {
+  item_key: string;
+  item_prefix: string;
+  aisle_code: string;
+  device_group_code: string;
+  locations: LocationOut[];
 };
 
 type UserOut = {
@@ -93,6 +104,23 @@ type UserOut = {
   department?: string | null;
   is_active?: boolean;
 };
+
+type MovementCode = "GR" | "GT" | "GI";
+
+type CandidateState = {
+  data: CandidateLocationsOut | null;
+  loading: boolean;
+  error: string | null;
+  settingDestinationId: number | null;
+};
+
+function unwrapApiData<T>(response: unknown): T {
+  if (response && typeof response === "object" && "data" in response) {
+    return (response as { data: T }).data;
+  }
+
+  return response as T;
+}
 
 function fmtDate(v?: string | null) {
   if (!v) return "";
@@ -119,8 +147,11 @@ function locationLabel(
   locationMap?: Record<number, LocationOut>
 ) {
   if (locationId == null) return "";
+
   const loc = locationMap?.[locationId];
+
   if (!loc) return "";
+
   return loc.name || loc.code || "";
 }
 
@@ -129,9 +160,11 @@ function doneByLabel(row: MovementOut, userMap: Record<number, UserOut>) {
 
   if (row.user_id != null) {
     const user = userMap[row.user_id];
+
     if (user) {
       return user.full_name || user.username || String(row.user_id);
     }
+
     return String(row.user_id);
   }
 
@@ -151,6 +184,7 @@ function movementTypeLabel(
   movementTypeMap: Record<number, MovementTypeOut>
 ) {
   const mt = movementTypeMap[movementTypeId];
+
   if (!mt) return String(movementTypeId);
 
   const code = (mt.code || "").toUpperCase();
@@ -162,103 +196,105 @@ function movementTypeLabel(
   return mt.name || mt.code || String(movementTypeId);
 }
 
-function movementTypeClassName(
+function movementCodeOf(
   movementTypeId: number,
   movementTypeMap: Record<number, MovementTypeOut>
-) {
-  const mt = movementTypeMap[movementTypeId];
-  const code = (mt?.code || "").toUpperCase();
-
-  if (code === "GI") return "text-red-600 font-semibold";
-  if (code === "GR") return "text-green-600 font-semibold";
-  if (code === "GT") return "text-blue-600 font-semibold";
-
-  return "text-black";
+): string {
+  return (movementTypeMap[movementTypeId]?.code || "").toUpperCase();
 }
 
-function resolveLocationIdFromText(
-  text: string,
-  currentId: number | null,
-  locationMap: Record<number, LocationOut>
-): number | null {
-  if (currentId != null) return currentId;
+function safeMovementCode(code: string): MovementCode {
+  const normalized = (code || "").toUpperCase();
 
-  const raw = text.trim();
-  if (!raw) return null;
+  if (normalized === "GR") return "GR";
+  if (normalized === "GT") return "GT";
+  if (normalized === "GI") return "GI";
 
-  const upper = raw.toUpperCase();
-
-  for (const loc of Object.values(locationMap)) {
-    if ((loc.code || "").trim().toUpperCase() === upper) {
-      return loc.id;
-    }
-  }
-
-  for (const loc of Object.values(locationMap)) {
-    if ((loc.name || "").trim().toUpperCase() === upper) {
-      return loc.id;
-    }
-  }
-
-  const asNumber = Number(raw);
-  if (Number.isFinite(asNumber) && locationMap[asNumber]) {
-    return asNumber;
-  }
-
-  return null;
+  return "GR";
 }
 
-type LocationAutocompleteProps = {
-  label: string;
-  valueText: string;
-  onTextChange: (v: string) => void;
-  onSelect: (loc: LocationOut) => void;
-  suggestions: LocationOut[];
-};
+function movementSelectClassName(code: string) {
+  const normalized = (code || "").toUpperCase();
 
-function LocationAutocomplete({
-  label,
-  valueText,
-  onTextChange,
-  onSelect,
-  suggestions,
-}: LocationAutocompleteProps) {
-  return (
-    <div className="relative">
-      <div className="mb-1 text-xs font-semibold text-zinc-700">{label}</div>
-      <Input
-        value={valueText}
-        onChange={(e) => onTextChange(e.target.value)}
-        placeholder="Type a location name…"
-      />
-      {valueText.trim() !== "" && suggestions.length > 0 && (
-        <div className="absolute z-50 mt-1 max-h-52 w-full overflow-auto rounded-xl border border-zinc-200 bg-white shadow-lg">
-          {suggestions.map((loc) => (
-            <button
-              key={loc.id}
-              type="button"
-              onClick={() => onSelect(loc)}
-              className="block w-full border-b border-zinc-100 px-3 py-2 text-left text-sm hover:bg-zinc-50"
-            >
-              <div className="font-medium text-black">{loc.name || loc.code}</div>
-              <div className="text-xs text-zinc-500">{loc.type}</div>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+  const base =
+    "h-10 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-semibold outline-none focus:border-zinc-500 disabled:bg-zinc-100 disabled:text-zinc-400";
+
+  if (normalized === "GR") {
+    return `${base} text-green-700`;
+  }
+
+  if (normalized === "GT") {
+    return `${base} text-blue-700`;
+  }
+
+  if (normalized === "GI") {
+    return `${base} text-red-700`;
+  }
+
+  return `${base} text-zinc-900`;
+}
+
+function movementOptionStyle(code: MovementCode): CSSProperties {
+  if (code === "GR") {
+    return {
+      color: "#15803d",
+      backgroundColor: "#dcfce7",
+      fontWeight: 700,
+    };
+  }
+
+  if (code === "GT") {
+    return {
+      color: "#1d4ed8",
+      backgroundColor: "#dbeafe",
+      fontWeight: 700,
+    };
+  }
+
+  return {
+    color: "#b91c1c",
+    backgroundColor: "#fee2e2",
+    fontWeight: 700,
+  };
+}
+
+function destinationOptionLabel(loc: LocationOut) {
+  const base = loc.name || loc.code;
+  const rackShelf =
+    loc.rack_code || loc.shelf_code
+      ? ` · Rack ${loc.rack_code ?? "-"} · Shelf ${loc.shelf_code ?? "-"}`
+      : "";
+  const scope = loc.is_warehouse_location ? " · Warehouse" : " · Outside";
+
+  return `${base}${rackShelf}${scope}`;
+}
+
+function noteField(notes: string | null | undefined, key: string): string {
+  if (!notes) return "";
+
+  const parts = notes.split("|").map((x) => x.trim());
+  const prefix = `${key}=`;
+  const found = parts.find((x) => x.startsWith(prefix));
+
+  return found ? found.slice(prefix.length).trim() : "";
+}
+
+function emptyCandidateState(): CandidateState {
+  return {
+    data: null,
+    loading: false,
+    error: null,
+    settingDestinationId: null,
+  };
 }
 
 export default function RFIDReviewPage() {
   const [reviewerUserId, setReviewerUserId] = useState("1");
   const [confirmingMovementIds, setConfirmingMovementIds] = useState<number[]>([]);
-  const [movementRejectNote, setMovementRejectNote] = useState(
-    "Invalid reading or discarded movement"
-  );
-  const [eventRejectNote, setEventRejectNote] = useState(
-    "Incident reviewed and discarded"
-  );
+  const [movementTypeUpdatingId, setMovementTypeUpdatingId] = useState<number | null>(null);
+
+  const movementRejectNote = "Invalid reading or discarded movement";
+  const eventRejectNote = "Incident reviewed and discarded";
 
   const [movementItemKeyFilter, setMovementItemKeyFilter] = useState("");
   const [movementUserFilter, setMovementUserFilter] = useState("");
@@ -278,30 +314,23 @@ export default function RFIDReviewPage() {
     link: null,
   });
 
-  const [eventDoorFilter, setEventDoorFilter] = useState("");
-  const [eventEpcFilter, setEventEpcFilter] = useState("");
-  const [eventTypeFilter, setEventTypeFilter] = useState("");
   const [eventRows, setEventRows] = useState<RFIDEventOut[]>([]);
 
   const [loadingMovements, setLoadingMovements] = useState(false);
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const [locationEditorOpen, setLocationEditorOpen] = useState(false);
-  const [editingMovement, setEditingMovement] = useState<MovementOut | null>(null);
-
-  const [locFromText, setLocFromText] = useState("");
-  const [locToText, setLocToText] = useState("");
-  const [locFromId, setLocFromId] = useState<number | null>(null);
-  const [locToId, setLocToId] = useState<number | null>(null);
-  const [fromSuggestions, setFromSuggestions] = useState<LocationOut[]>([]);
-  const [toSuggestions, setToSuggestions] = useState<LocationOut[]>([]);
   const [locationMap, setLocationMap] = useState<Record<number, LocationOut>>({});
   const [userMap, setUserMap] = useState<Record<number, UserOut>>({});
   const [movementTypeMap, setMovementTypeMap] = useState<Record<number, MovementTypeOut>>({});
+  const [candidateByMovement, setCandidateByMovement] = useState<
+    Record<number, CandidateState>
+  >({});
 
-  const fromDebounceRef = useRef<number | null>(null);
-  const toDebounceRef = useRef<number | null>(null);
+  const [editingQty, setEditingQty] = useState<Record<number, string>>({});
+  const [editingDescription, setEditingDescription] = useState<Record<number, string>>({});
+  const [savingDescriptionIds, setSavingDescriptionIds] = useState<number[]>([]);
+  const [expandedMovementIds, setExpandedMovementIds] = useState<number[]>([]);
 
   const movementRowsRef = useRef<MovementOut[]>([]);
   const movementMetaRef = useRef<PageMeta>({
@@ -312,14 +341,15 @@ export default function RFIDReviewPage() {
     link: null,
   });
   const movementPageRef = useRef<number>(1);
+  const candidateByMovementRef = useRef<Record<number, CandidateState>>({});
 
   const reviewerId = useMemo(() => toNumberOrZero(reviewerUserId), [reviewerUserId]);
 
   const movementQuery = useMemo(() => {
-    return [movementItemKeyFilter.trim(), movementUserFilter.trim()].filter(Boolean).join(" ");
+    return [movementItemKeyFilter.trim(), movementUserFilter.trim()]
+      .filter(Boolean)
+      .join(" ");
   }, [movementItemKeyFilter, movementUserFilter]);
-
-  const [editingQty, setEditingQty] = useState<Record<number, string>>({});
 
   useEffect(() => {
     movementRowsRef.current = movementRows;
@@ -332,6 +362,10 @@ export default function RFIDReviewPage() {
   useEffect(() => {
     movementPageRef.current = movementPage;
   }, [movementPage]);
+
+  useEffect(() => {
+    candidateByMovementRef.current = candidateByMovement;
+  }, [candidateByMovement]);
 
   function movementSnapshot(rows: MovementOut[]) {
     return rows.map((r) => ({
@@ -427,36 +461,198 @@ export default function RFIDReviewPage() {
     try {
       const { data } = await apiGet<MovementTypeOut[]>("/api/movement-types");
       const next: Record<number, MovementTypeOut> = {};
-      for (const row of data) next[row.id] = row;
+
+      for (const row of data) {
+        next[row.id] = row;
+      }
+
       setMovementTypeMap(next);
     } catch {
       setMovementTypeMap({});
     }
   }
 
-  async function searchLocations(term: string): Promise<LocationOut[]> {
-    const q = term.trim();
-    if (!q) return [];
-    const { data } = await apiGet<PageOut<LocationOut>>("/api/locations", {
-      q,
-      include_inactive: false,
-      page: 1,
-      page_size: 8,
-    });
-    return data.items;
+  async function loadCandidateLocations(row: MovementOut, force = false) {
+    const current = candidateByMovementRef.current[row.id];
+
+    if (!force && (current?.loading || current?.data || current?.error)) {
+      return;
+    }
+
+    setCandidateByMovement((prev) => ({
+      ...prev,
+      [row.id]: {
+        data: force ? null : prev[row.id]?.data ?? null,
+        loading: true,
+        error: null,
+        settingDestinationId: prev[row.id]?.settingDestinationId ?? null,
+      },
+    }));
+
+    try {
+      const { data } = await apiGet<CandidateLocationsOut>(
+        `/api/movements/${row.id}/candidate-locations`
+      );
+
+      setCandidateByMovement((prev) => ({
+        ...prev,
+        [row.id]: {
+          data,
+          loading: false,
+          error: null,
+          settingDestinationId: prev[row.id]?.settingDestinationId ?? null,
+        },
+      }));
+
+      setLocationMap((prev) => {
+        const next = { ...prev };
+
+        for (const loc of data.locations) {
+          next[loc.id] = loc;
+        }
+
+        return next;
+      });
+    } catch (e: any) {
+      setCandidateByMovement((prev) => ({
+        ...prev,
+        [row.id]: {
+          data: null,
+          loading: false,
+          error: e?.message ?? String(e),
+          settingDestinationId: null,
+        },
+      }));
+    }
   }
 
-  async function loadMovements(
-    p: number,
-    options?: { silent?: boolean }
-  ) {
+  async function setMovementType(row: MovementOut, movementTypeCode: MovementCode) {
+    setErr(null);
+    setMovementTypeUpdatingId(row.id);
+
+    setCandidateByMovement((prev) => ({
+      ...prev,
+      [row.id]: {
+        data: null,
+        loading: true,
+        error: null,
+        settingDestinationId: null,
+      },
+    }));
+
+    try {
+      const response = await apiJson(
+        "PATCH",
+        `/api/movements/${row.id}/movement-type`,
+        {
+          movement_type_code: movementTypeCode,
+        }
+      );
+
+      const updated = unwrapApiData<MovementOut>(response);
+
+      setMovementRows((prev) =>
+        prev.map((m) => (m.id === updated.id ? { ...m, ...updated } : m))
+      );
+
+      await loadCandidateLocations(updated, true);
+    } catch (e: any) {
+      setErr(e?.message ?? String(e));
+
+      setCandidateByMovement((prev) => ({
+        ...prev,
+        [row.id]: {
+          data: null,
+          loading: false,
+          error: e?.message ?? String(e),
+          settingDestinationId: null,
+        },
+      }));
+    } finally {
+      setMovementTypeUpdatingId(null);
+    }
+  }
+
+  async function setCandidateAsDestination(row: MovementOut, loc: LocationOut) {
+    setErr(null);
+
+    setCandidateByMovement((prev) => ({
+      ...prev,
+      [row.id]: {
+        ...(prev[row.id] ?? emptyCandidateState()),
+        settingDestinationId: loc.id,
+        error: null,
+      },
+    }));
+
+    try {
+      const response = await apiJson(
+        "PATCH",
+        `/api/movements/${row.id}/destination`,
+        {
+          location_id: loc.id,
+        }
+      );
+
+      const updated = unwrapApiData<MovementOut>(response);
+
+      setLocationMap((prev) => ({
+        ...prev,
+        [loc.id]: loc,
+      }));
+
+      setMovementRows((prev) =>
+        prev.map((m) => (m.id === updated.id ? { ...m, ...updated } : m))
+      );
+    } catch (e: any) {
+      setCandidateByMovement((prev) => ({
+        ...prev,
+        [row.id]: {
+          ...(prev[row.id] ?? emptyCandidateState()),
+          error: e?.message ?? String(e),
+        },
+      }));
+    } finally {
+      setCandidateByMovement((prev) => ({
+        ...prev,
+        [row.id]: {
+          ...(prev[row.id] ?? emptyCandidateState()),
+          settingDestinationId: null,
+        },
+      }));
+    }
+  }
+
+  async function handleDestinationSelect(row: MovementOut, value: string) {
+    if (!value) return;
+
+    const state = candidateByMovementRef.current[row.id];
+    const locationId = Number(value);
+
+    if (!Number.isFinite(locationId)) return;
+
+    const loc = state?.data?.locations.find((x) => x.id === locationId);
+
+    if (!loc) {
+      setCandidateByMovement((prev) => ({
+        ...prev,
+        [row.id]: {
+          ...(prev[row.id] ?? emptyCandidateState()),
+          error: "Selected destination was not found in the candidate list",
+        },
+      }));
+
+      return;
+    }
+
+    await setCandidateAsDestination(row, loc);
+  }
+
+  async function loadMovements(p: number, options?: { silent?: boolean }) {
     const silent = options?.silent ?? false;
 
     if (!silent) {
       setLoadingMovements(true);
-    }
-
-    if (!silent) {
       setErr(null);
     }
 
@@ -504,6 +700,10 @@ export default function RFIDReviewPage() {
         setMovementMeta(meta);
         setMovementPage(p);
       }
+
+      for (const item of items) {
+        void loadCandidateLocations(item);
+      }
     } catch (e: any) {
       if (!silent) {
         setErr(e?.message ?? String(e));
@@ -526,18 +726,9 @@ export default function RFIDReviewPage() {
         review_status: "pending",
         has_movement: false,
         limit: 100,
-        door_id: eventDoorFilter.trim() || undefined,
-        epc: eventEpcFilter.trim() || undefined,
       });
 
-      let items = data;
-
-      if (eventTypeFilter.trim()) {
-        const needle = eventTypeFilter.trim().toLowerCase();
-        items = items.filter((x) => (x.event_type || "").toLowerCase().includes(needle));
-      }
-
-      setEventRows(items);
+      setEventRows(data);
     } catch (e: any) {
       setErr(e?.message ?? String(e));
     } finally {
@@ -553,56 +744,13 @@ export default function RFIDReviewPage() {
         loadUserMap(),
         loadEvents(),
       ]);
+
       await loadMovements(1);
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  {/*useEffect(() => {
-    if (Object.keys(locationMap).length > 0) {
-      loadMovements(1);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [locationMap]);*/}
-
   useEffect(() => {
-    if (!locationEditorOpen) return;
-    if (fromDebounceRef.current) window.clearTimeout(fromDebounceRef.current);
-
-    fromDebounceRef.current = window.setTimeout(async () => {
-      try {
-        const items = await searchLocations(locFromText);
-        setFromSuggestions(items);
-      } catch {
-        setFromSuggestions([]);
-      }
-    }, 250);
-
-    return () => {
-      if (fromDebounceRef.current) window.clearTimeout(fromDebounceRef.current);
-    };
-  }, [locFromText, locationEditorOpen]);
-
-  useEffect(() => {
-    if (!locationEditorOpen) return;
-    if (toDebounceRef.current) window.clearTimeout(toDebounceRef.current);
-
-    toDebounceRef.current = window.setTimeout(async () => {
-      try {
-        const items = await searchLocations(locToText);
-        setToSuggestions(items);
-      } catch {
-        setToSuggestions([]);
-      }
-    }, 250);
-
-    return () => {
-      if (toDebounceRef.current) window.clearTimeout(toDebounceRef.current);
-    };
-  }, [locToText, locationEditorOpen]);
-
-  useEffect(() => {
-    if (locationEditorOpen) return;
-
     const intervalId = window.setInterval(() => {
       loadMovements(movementPageRef.current, { silent: true });
     }, 2000);
@@ -612,7 +760,6 @@ export default function RFIDReviewPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    locationEditorOpen,
     movementQuery,
     movementDateFromFilter,
     movementDateToFilter,
@@ -621,85 +768,70 @@ export default function RFIDReviewPage() {
     locationMap,
   ]);
 
-  function currentQtyValue(row: MovementOut, editingQty: Record<number, string>) {
-    if (editingQty[row.id] != null) return editingQty[row.id];
+  function currentDescriptionValue(row: MovementOut) {
+    if (editingDescription[row.id] != null) {
+      return editingDescription[row.id];
+    }
+
+    return row.notes ?? "";
+  }
+
+  function isMovementExpanded(movementId: number) {
+    return expandedMovementIds.includes(movementId);
+  }
+
+  function toggleMovementExpanded(movementId: number) {
+    setExpandedMovementIds((prev) =>
+      prev.includes(movementId)
+        ? prev.filter((id) => id !== movementId)
+        : [...prev, movementId]
+    );
+  }
+
+  async function saveMovementDescription(row: MovementOut) {
+    if (savingDescriptionIds.includes(row.id)) return;
+
+    setErr(null);
+    setSavingDescriptionIds((prev) => [...prev, row.id]);
+
+    try {
+      const notes = currentDescriptionValue(row).trim();
+
+      const response = await apiJson(
+        "PATCH",
+        `/api/movements/${row.id}/description`,
+        {
+          notes,
+        }
+      );
+
+      const updated = unwrapApiData<MovementOut>(response);
+
+      setMovementRows((prev) =>
+        prev.map((m) => (m.id === updated.id ? { ...m, ...updated } : m))
+      );
+
+      setEditingDescription((prev) => {
+        const next = { ...prev };
+        delete next[row.id];
+        return next;
+      });
+    } catch (e: any) {
+      setErr(e?.message ?? String(e));
+    } finally {
+      setSavingDescriptionIds((prev) => prev.filter((id) => id !== row.id));
+    }
+  }
+
+  function currentQtyValue(row: MovementOut, editingQtyMap: Record<number, string>) {
+    if (editingQtyMap[row.id] != null) return editingQtyMap[row.id];
     if (row.quantity == null || row.quantity === "") return "1";
     return String(row.quantity);
   }
 
-  function openLocationEditor(row: MovementOut) {
-    setEditingMovement(row);
-    setLocFromId(row.from_location_id ?? null);
-    setLocToId(row.to_location_id ?? null);
-
-    setLocFromText(
-      row.from_location_id != null
-        ? locationMap[row.from_location_id]?.name ||
-            locationMap[row.from_location_id]?.code ||
-            ""
-        : ""
-    );
-
-    setLocToText(
-      row.to_location_id != null
-        ? locationMap[row.to_location_id]?.name ||
-            locationMap[row.to_location_id]?.code ||
-            ""
-        : ""
-    );
-
-    setFromSuggestions([]);
-    setToSuggestions([]);
-    setLocationEditorOpen(true);
-  }
-
-  function closeLocationEditor() {
-    setLocationEditorOpen(false);
-    setEditingMovement(null);
-    setLocFromText("");
-    setLocToText("");
-    setLocFromId(null);
-    setLocToId(null);
-    setFromSuggestions([]);
-    setToSuggestions([]);
-  }
-
-  async function saveMovementLocations() {
-    if (!editingMovement) return;
-    setErr(null);
-
-    try {
-      const resolvedFromId = resolveLocationIdFromText(locFromText, locFromId, locationMap);
-      const resolvedToId = resolveLocationIdFromText(locToText, locToId, locationMap);
-
-      if (locFromText.trim() !== "" && resolvedFromId == null) {
-        setErr(`Source location not found: ${locFromText}`);
-        return;
-      }
-
-      if (locToText.trim() !== "" && resolvedToId == null) {
-        setErr(`Destination location not found: ${locToText}`);
-        return;
-      }
-
-      const payload: MovementLocationsUpdateIn = {
-        from_location_id: resolvedFromId,
-        to_location_id: resolvedToId,
-      };
-
-      await apiJson("PATCH", `/api/movements/${editingMovement.id}/locations`, payload);
-
-      closeLocationEditor();
-      await loadLocationMap();
-      await loadMovements(movementPageRef.current);
-      await loadEvents();
-    } catch (e: any) {
-      setErr(e?.message ?? String(e));
-    }
-  }
-
   async function saveMovementQuantity(row: MovementOut) {
     setErr(null);
+
     try {
       const raw = editingQty[row.id] ?? (row.quantity == null ? "1" : String(row.quantity));
       const qty = Number(raw);
@@ -736,6 +868,7 @@ export default function RFIDReviewPage() {
         reviewed_by_user_id: reviewerId,
         note: "Validated manually",
       };
+
       await apiPost(`/api/movements/${row.id}/confirm`, payload);
       await loadMovements(movementPageRef.current);
       await loadEvents();
@@ -748,11 +881,13 @@ export default function RFIDReviewPage() {
 
   async function rejectMovement(row: MovementOut) {
     setErr(null);
+
     try {
       const payload: MovementReviewIn = {
         reviewed_by_user_id: reviewerId,
-        note: movementRejectNote.trim() || "Rejected manually",
+        note: movementRejectNote,
       };
+
       await apiPost(`/api/movements/${row.id}/reject`, payload);
       await loadMovements(movementPageRef.current);
       await loadEvents();
@@ -763,11 +898,13 @@ export default function RFIDReviewPage() {
 
   async function confirmEvent(row: RFIDEventOut) {
     setErr(null);
+
     try {
       const payload: RFIDEventReviewIn = {
         reviewed_by_user_id: reviewerId,
         note: "Incident reviewed",
       };
+
       await apiPost(`/api/rfid/events/${row.id}/confirm`, payload);
       await loadEvents();
     } catch (e: any) {
@@ -777,11 +914,13 @@ export default function RFIDReviewPage() {
 
   async function rejectEvent(row: RFIDEventOut) {
     setErr(null);
+
     try {
       const payload: RFIDEventReviewIn = {
         reviewed_by_user_id: reviewerId,
-        note: eventRejectNote.trim() || "Rejected manually",
+        note: eventRejectNote,
       };
+
       await apiPost(`/api/rfid/events/${row.id}/reject`, payload);
       await loadEvents();
     } catch (e: any) {
@@ -796,19 +935,26 @@ export default function RFIDReviewPage() {
     return movementMeta.pages && movementMeta.pages > 0 ? movementMeta.pages : computed;
   }, [movementMeta.pages, movementMeta.pageSize, movementMeta.total, movementPageSize]);
 
-  const FILTER_ROW_TOP = "32px";
-
   return (
     <AppShell
       title="RFID Review"
       subtitle="Manual review of pending movements and unusual RFID events"
-      actions={
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={() => loadMovements(1)} disabled={loadingMovements}>
-            Reload movements
-          </Button>
-        </div>
-      }
+    //actions={
+    //  <div className="flex items-center gap-2">
+    //    <div className="flex items-center gap-2 text-xs text-zinc-600">
+    //      <span>Reviewer</span>
+    //      <Input
+    //        value={reviewerUserId}
+    //       onChange={(e) => setReviewerUserId(e.target.value)}
+    //        className="w-20"
+    //      />
+    //    </div>
+
+    //    <Button variant="outline" onClick={() => loadMovements(1)} disabled={loadingMovements}>
+    //      Reload movements
+    //    </Button>
+    //  </div >
+    //}
     >
       <div className="space-y-6">
         {err && (
@@ -821,236 +967,349 @@ export default function RFIDReviewPage() {
           <div className="border-b border-zinc-200 px-4 py-3">
             <div className="text-sm font-semibold text-zinc-900">Pending Movements</div>
             <div className="mt-1 text-xs text-zinc-500">
-              Queue of RFID movements awaiting manual confirmation
+              Review each RFID movement, adjust the type, select the destination, then confirm
             </div>
           </div>
+          {/*}
+          <div className="border-b border-zinc-200 bg-zinc-50/50 px-4 py-4">
+            <div className="grid gap-3 xl:grid-cols-[1.1fr_1fr_1fr_1fr_auto]">
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-zinc-600">
+                  Part or notes
+                </label>
+                <Input
+                  value={movementItemKeyFilter}
+                  onChange={(e) => setMovementItemKeyFilter(e.target.value)}
+                  placeholder="Part ID, EPC, notes…"
+                />
+              </div>
 
-          <div className="relative max-h-[750px] overflow-auto bg-white">
-            <table className="min-w-full border-separate border-spacing-0 [table-layout:fixed]">
-              <thead>
-                <tr>
-                  {[
-                    "ID",
-                    "Date",
-                    "Part ID",
-                    "Movement Type",
-                    "Description",
-                    "Source",
-                    "Destination",
-                    "Done By",
-                    "Quantity",
-                    "Actions",
-                  ].map((h) => (
-                    <th
-                      key={h}
-                      className="sticky top-0 z-30 whitespace-nowrap border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-left text-xs font-semibold text-zinc-700"
-                    >
-                      {h}
-                    </th>
-                  ))}
-                </tr>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-zinc-600">
+                  From date
+                </label>
+                <Input
+                  type="date"
+                  value={movementDateFromFilter}
+                  onChange={(e) => setMovementDateFromFilter(e.target.value)}
+                />
+              </div>
 
-                <tr>
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  />
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  >
-                    <div className="grid gap-2">
-                      <Input
-                        type="date"
-                        value={movementDateFromFilter}
-                        onChange={(e) => setMovementDateFromFilter(e.target.value)}
-                      />
-                      <Input
-                        type="date"
-                        value={movementDateToFilter}
-                        onChange={(e) => setMovementDateToFilter(e.target.value)}
-                      />
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-zinc-600">
+                  To date
+                </label>
+                <Input
+                  type="date"
+                  value={movementDateToFilter}
+                  onChange={(e) => setMovementDateToFilter(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-zinc-600">
+                  Done by
+                </label>
+                <Input
+                  value={movementUserFilter}
+                  onChange={(e) => setMovementUserFilter(e.target.value)}
+                  placeholder="Operator…"
+                />
+              </div>
+
+              <div className="flex items-end">
+                <Button
+                  variant="outline"
+                  onClick={() => loadMovements(1)}
+                  disabled={loadingMovements}
+                >
+                  Search
+                </Button>
+              </div>
+            </div>
+
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
+              <Input
+                value={movementSourceFilter}
+                onChange={(e) => setMovementSourceFilter(e.target.value)}
+                placeholder="Filter source…"
+              />
+              <Input
+                value={movementDestinationFilter}
+                onChange={(e) => setMovementDestinationFilter(e.target.value)}
+                placeholder="Filter destination…"
+              />
+            </div>
+          </div>
+          */}
+          <div className="grid items-start gap-3 p-4 xl:grid-cols-3">
+            {movementRows.map((r) => {
+              const rowMovementCode = safeMovementCode(
+                movementCodeOf(r.movement_type_id, movementTypeMap)
+              );
+
+              const candidateState = candidateByMovement[r.id] ?? emptyCandidateState();
+              const candidateLocations = candidateState.data?.locations ?? [];
+              const destinationDisabled =
+                candidateState.loading ||
+                candidateState.settingDestinationId !== null ||
+                movementTypeUpdatingId === r.id ||
+                candidateLocations.length === 0;
+
+              const logicalName = noteField(r.notes, "logical_name");
+              const aisleCode = noteField(r.notes, "aisle_code");
+
+              return (
+                <div
+                  key={r.id}
+                  className="w-fit max-w-[475px] justify-self-start rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="rounded-full bg-blue-900 px-2.5 py-1 text-xs font-semibold text-white">
+                        #{r.id}
+                      </span>
+
+                      <span className="text-base font-semibold text-zinc-950">
+                        {r.item_key || "No Part ID"}
+                      </span>
                     </div>
-                  </th>
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  >
-                    <Input
-                      value={movementItemKeyFilter}
-                      onChange={(e) => setMovementItemKeyFilter(e.target.value)}
-                      placeholder="Part ID…"
-                    />
-                  </th>
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  />
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  />
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  >
-                    <Input
-                      value={movementSourceFilter}
-                      onChange={(e) => setMovementSourceFilter(e.target.value)}
-                      placeholder="Source…"
-                    />
-                  </th>
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  >
-                    <Input
-                      value={movementDestinationFilter}
-                      onChange={(e) => setMovementDestinationFilter(e.target.value)}
-                      placeholder="Destination…"
-                    />
-                  </th>
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  >
-                    <Input
-                      value={movementUserFilter}
-                      onChange={(e) => setMovementUserFilter(e.target.value)}
-                      placeholder="Done by…"
-                    />
-                  </th>
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  />
-                  <th
-                    className="sticky z-20 border-b border-zinc-200 bg-white px-3 py-2"
-                    style={{ top: FILTER_ROW_TOP }}
-                  >
-                    <div className="flex justify-end">
-                      <Button
-                        variant="outline"
-                        onClick={() => loadMovements(1)}
-                        disabled={loadingMovements}
-                      >
-                        Search
-                      </Button>
-                    </div>
-                  </th>
-                </tr>
-              </thead>
 
-              <tbody>
-                {movementRows.map((r) => (
-                  <tr key={r.id} className="hover:bg-zinc-50">
-                    <td className="border-b border-zinc-100 px-3 py-2 text-sm font-medium text-black">
-                      {r.id}
-                    </td>
-
-                    <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black whitespace-nowrap">
+                    <div className="mt-1 text-sm text-zinc-500">
                       {fmtDate(r.created_at)}
-                    </td>
+                    </div>
+                  </div>
 
-                    <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                      {r.item_key || ""}
-                    </td>
+                  <div className="mt-2 grid gap-3">
+                    <div className="space-y-3">
+                      <div className="grid gap-2 md:grid-cols-[180px_195px_48px] md:justify-start">
+                        <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                          <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                            Movement Type
+                          </div>
 
-                    <td
-                      className={`border-b border-zinc-100 px-3 py-2 text-sm ${movementTypeClassName(
-                        r.movement_type_id,
-                        movementTypeMap
-                      )}`}
-                    >
-                      {movementTypeLabel(r.movement_type_id, movementTypeMap)}
-                    </td>
+                          <div className="mt-1 flex h-10 items-center">
+                            <select
+                              value={rowMovementCode}
+                              disabled={movementTypeUpdatingId === r.id}
+                              onChange={(e) => {
+                                const nextCode = e.target.value as MovementCode;
 
-                    <td className="border-b border-zinc-100 px-3 py-2 text-xs text-black">
-                      <div className="max-w-[360px] whitespace-pre-wrap break-words">
-                        {r.notes || ""}
-                      </div>
-                    </td>
+                                if (nextCode !== rowMovementCode) {
+                                  void setMovementType(r, nextCode);
+                                }
+                              }}
+                              className={`${movementSelectClassName(rowMovementCode)} h-10`}
+                            >
+                              <option value="GR" style={movementOptionStyle("GR")}>
+                                Good Receipt
+                              </option>
 
-                    <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                      {locationLabel(r.from_location_id, locationMap)}
-                    </td>
+                              <option value="GT" style={movementOptionStyle("GT")}>
+                                Good Transfer
+                              </option>
 
-                    <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                      {locationLabel(r.to_location_id, locationMap)}
-                    </td>
+                              <option value="GI" style={movementOptionStyle("GI")}>
+                                Good Issue
+                              </option>
+                            </select>
+                          </div>
+                        </div>
 
-                    <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                      {doneByLabel(r,userMap)}
-                    </td>
+                        <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                          <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                            Destination
+                          </div>
 
-                    <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="number"
-                          min="1"
-                          step="1"
-                          value={currentQtyValue(r, editingQty)}
-                          onChange={(e) =>
-                            setEditingQty((prev) => ({
-                              ...prev,
-                              [r.id]: e.target.value,
-                            }))
-                          }
-                          className="w-20 rounded border border-zinc-300 px-2 py-1 text-sm"
-                        />
-                        <Button variant="outline" size="sm" onClick={() => saveMovementQuantity(r)}>
-                          Save
-                        </Button>
-                      </div>
-                    </td>
+                          <div className="mt-1 flex h-10 items-center">
+                            <select
+                              value={r.to_location_id != null ? String(r.to_location_id) : ""}
+                              disabled={destinationDisabled}
+                              onChange={(e) => {
+                                void handleDestinationSelect(r, e.target.value);
+                              }}
+                              className="h-10 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 disabled:bg-zinc-100 disabled:text-zinc-400"
+                            >
+                              <option value="">
+                                {candidateState.loading
+                                  ? "Loading destinations…"
+                                  : candidateLocations.length === 0
+                                    ? "No valid destinations"
+                                    : "Select destination…"}
+                              </option>
 
-                    <td className="border-b border-zinc-100 px-3 py-2 text-sm text-black">
-                      <div className="flex flex-wrap gap-2">
-                        <Button variant="outline" size="sm" onClick={() => openLocationEditor(r)}>
-                          Edit locations
-                        </Button>
-                        {r.to_location_id != null && (
-                          <Button
-                            variant="primary"
-                            size="sm"
-                            onClick={() => confirmMovement(r)}
-                            disabled={confirmingMovementIds.includes(r.id)}
+                              {candidateLocations.map((loc) => (
+                                <option key={loc.id} value={loc.id}>
+                                  {destinationOptionLabel(loc)}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+
+                        <div
+                          title="Actions"
+                          className="flex w-12 flex-col items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-zinc-50 p-1.5 xl:row-span-2"
+                        >
+                          <span className="sr-only">Actions</span>
+
+                          <button
+                            type="button"
+                            onClick={() => toggleMovementExpanded(r.id)}
+                            title={
+                              isMovementExpanded(r.id)
+                                ? "Hide movement details"
+                                : "Show movement details"
+                            }
+                            className="flex h-9 w-9 items-center justify-center rounded-lg border border-blue-600 bg-blue-600 text-white hover:bg-blue-700"
                           >
-                            {confirmingMovementIds.includes(r.id) ? "Confirming..." : "Confirm"}
-                          </Button>
-                        )}
-                        <Button variant="danger" size="sm" onClick={() => rejectMovement(r)}>
-                          Reject
-                        </Button>
+                            {isMovementExpanded(r.id) ? (
+                              <Minus className="h-4 w-4" />
+                            ) : (
+                              <Plus className="h-4 w-4" />
+                            )}
+                            <span className="sr-only">
+                              {isMovementExpanded(r.id)
+                                ? "Hide movement details"
+                                : "Show movement details"}
+                            </span>
+                          </button>
+
+                          {r.to_location_id != null && (
+                            <button
+                              type="button"
+                              onClick={() => confirmMovement(r)}
+                              disabled={confirmingMovementIds.includes(r.id)}
+                              title="Confirm movement"
+                              className="flex h-9 w-9 items-center justify-center rounded-lg border border-green-600 bg-green-600 text-white hover:bg-green-700 disabled:opacity-60"
+                            >
+                              <CheckCircle2 className="h-4 w-4" />
+                              <span className="sr-only">Confirm movement</span>
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => rejectMovement(r)}
+                            title="Reject movement"
+                            className="flex h-9 w-9 items-center justify-center rounded-lg border border-red-600 bg-red-600 text-white hover:bg-red-700"
+                          >
+                            <XCircle className="h-4 w-4" />
+                            <span className="sr-only">Reject movement</span>
+                          </button>
+                        </div>
+
+                        <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                          <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                            Done by
+                          </div>
+
+                          <div className="mt-1 flex h-10 items-center text-sm font-medium text-zinc-900">
+                            {doneByLabel(r, userMap) || ""}
+                          </div>
+                        </div>
+
+                        <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                          <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                            Quantity
+                          </div>
+
+                          <div className="mt-1 flex h-10 items-center gap-2">
+                            <input
+                              type="number"
+                              min="1"
+                              step="1"
+                              value={currentQtyValue(r, editingQty)}
+                              onChange={(e) =>
+                                setEditingQty((prev) => ({
+                                  ...prev,
+                                  [r.id]: e.target.value,
+                                }))
+                              }
+                              className="h-10 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500"
+                            />
+
+                            <button
+                              type="button"
+                              onClick={() => saveMovementQuantity(r)}
+                              className="h-10 rounded-lg border border-zinc-300 bg-white px-4 text-sm font-medium text-zinc-900 hover:bg-zinc-50"
+                            >
+                              Save
+                            </button>
+                          </div>
+                        </div>
                       </div>
-                    </td>
-                  </tr>
-                ))}
+                    </div>
 
-                {!loadingMovements && movementRows.length === 0 && (
-                  <tr>
-                    <td colSpan={10} className="px-3 py-6 text-sm text-zinc-600">
-                      No pending movements
-                    </td>
-                  </tr>
-                )}
 
-                {loadingMovements && (
-                  <tr>
-                    <td colSpan={10} className="px-3 py-6 text-sm text-zinc-600">
-                      Loading…
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+                  </div>
+
+                  {isMovementExpanded(r.id) && (
+                    <div className="mt-2 grid gap-2 md:grid-cols-[180px_195px_48px] md:justify-start">
+                      <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 md:col-span-3">
+                        <div className="grid gap-2 md:grid-cols-[180px_195px_48px]">
+                          <div className="md:col-span-2">
+                            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                              Description
+                            </label>
+
+                            <textarea
+                              value={currentDescriptionValue(r)}
+                              onChange={(e) =>
+                                setEditingDescription((prev) => ({
+                                  ...prev,
+                                  [r.id]: e.target.value,
+                                }))
+                              }
+                              rows={5}
+                              className="mt-2 w-[calc(100%-10px)] resize-y rounded-lg border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 outline-none focus:border-zinc-500 disabled:bg-zinc-100 disabled:text-zinc-400"
+                              placeholder="Movement description..."
+                            />
+                          </div>
+
+                          <div className="flex w-12 -translate-x-4 justify-center pt-[29px]">
+                            <button
+                              type="button"
+                              onClick={() => saveMovementDescription(r)}
+                              disabled={savingDescriptionIds.includes(r.id)}
+                              title="Save description"
+                              className="flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-900 bg-zinc-900 text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              <Save className="h-4 w-4" />
+
+                              <span className="sr-only">
+                                {savingDescriptionIds.includes(r.id)
+                                  ? "Saving description"
+                                  : "Save description"}
+                              </span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+              {!loadingMovements && movementRows.length === 0 && (
+                <div className="col-span-full flex min-h-[120px] w-full items-center justify-center rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-8 text-center text-sm text-zinc-600">
+                  No pending movements
+                </div>
+              )}
+
+              {loadingMovements && (
+                <div className="col-span-full flex min-h-[120px] w-full items-center justify-center rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-8 text-center text-sm text-zinc-600">
+                  Loading movements…
+                </div>
+              )}
           </div>
 
           <div className="flex flex-col gap-2 border-t border-zinc-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-sm text-zinc-600">
-              Total <span className="font-semibold text-zinc-900">{movementMeta.total}</span> • Page{" "}
-              <span className="font-semibold text-zinc-900">{movementMeta.page}</span> /{" "}
-              <span className="font-semibold text-zinc-900">{movementPages}</span> • Size{" "}
+              Total <span className="font-semibold text-zinc-900">{movementMeta.total}</span> ·
+              Page <span className="font-semibold text-zinc-900">{movementMeta.page}</span> /{" "}
+              <span className="font-semibold text-zinc-900">{movementPages}</span> · Size{" "}
               <span className="font-semibold text-zinc-900">{movementMeta.pageSize}</span>
             </div>
 
@@ -1071,86 +1330,73 @@ export default function RFIDReviewPage() {
           </div>
         </div>
 
-        {locationEditorOpen && editingMovement && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-            <div className="w-full max-w-2xl rounded-2xl border border-zinc-200 bg-white p-5 shadow-xl">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-sm font-semibold text-zinc-900">
-                    Edit movement locations #{editingMovement.id}
-                  </div>
-                  <div className="mt-1 text-xs text-zinc-500">
-                    Update source and destination locations before confirmation
-                  </div>
-                </div>
-
-                <Button variant="ghost" onClick={closeLocationEditor}>
-                  Close
-                </Button>
+        {eventRows.length > 0 && (
+          <div className="rounded-xl border border-zinc-200 bg-white">
+            <div className="border-b border-zinc-200 px-4 py-3">
+              <div className="text-sm font-semibold text-zinc-900">Pending RFID Events</div>
+              <div className="mt-1 text-xs text-zinc-500">
+                Unusual RFID events awaiting review
+                {loadingEvents ? " · Loading…" : ""}
               </div>
+            </div>
 
-              <div className="mt-4 grid gap-4 md:grid-cols-2">
-                <LocationAutocomplete
-                  label="From location"
-                  valueText={locFromText}
-                  onTextChange={(v) => {
-                    setLocFromText(v);
-                    setLocFromId(null);
-                  }}
-                  onSelect={(loc) => {
-                    setLocFromId(loc.id);
-                    setLocFromText(loc.name || loc.code);
-                    setFromSuggestions([]);
-                  }}
-                  suggestions={fromSuggestions}
-                />
+            <div className="overflow-auto">
+              <table className="min-w-full border-separate border-spacing-0">
+                <thead className="bg-zinc-50">
+                  <tr>
+                    {["ID", "Date", "Type", "Reason", "EPC", "Door", "Payload", "Actions"].map(
+                      (h) => (
+                        <th
+                          key={h}
+                          className="border-b border-zinc-200 px-3 py-2 text-left text-xs font-semibold text-zinc-700"
+                        >
+                          {h}
+                        </th>
+                      )
+                    )}
+                  </tr>
+                </thead>
 
-                <LocationAutocomplete
-                  label="To location"
-                  valueText={locToText}
-                  onTextChange={(v) => {
-                    setLocToText(v);
-                    setLocToId(null);
-                  }}
-                  onSelect={(loc) => {
-                    setLocToId(loc.id);
-                    setLocToText(loc.name || loc.code);
-                    setToSuggestions([]);
-                  }}
-                  suggestions={toSuggestions}
-                />
-              </div>
-
-              <div className="mt-4 grid gap-3 md:grid-cols-2">
-                <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm">
-                  <div className="font-medium text-zinc-800">Selected From</div>
-                  <div className="mt-1 text-zinc-600">
-                    {locFromId != null ? locFromText : "Not selected"}
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm">
-                  <div className="font-medium text-zinc-800">Selected To</div>
-                  <div className="mt-1 text-zinc-600">
-                    {locToId != null ? locToText : "Not selected"}
-                  </div>
-                </div>
-              </div>
-
-              {err && (
-                <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                  Error: {err}
-                </div>
-              )}
-
-              <div className="mt-5 flex items-center justify-end gap-2">
-                <Button variant="outline" onClick={closeLocationEditor}>
-                  Cancel
-                </Button>
-                <Button variant="primary" onClick={saveMovementLocations}>
-                  Save locations
-                </Button>
-              </div>
+                <tbody>
+                  {eventRows.map((r) => (
+                    <tr key={r.id} className="hover:bg-zinc-50">
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm font-medium">
+                        {r.id}
+                      </td>
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm">
+                        {fmtDate(r.created_at)}
+                      </td>
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm">
+                        {r.event_type}
+                      </td>
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm">
+                        {r.reason || ""}
+                      </td>
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm">
+                        {r.epc || ""}
+                      </td>
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm">
+                        {r.door_id || ""}
+                      </td>
+                      <td className="border-b border-zinc-100 px-3 py-2 text-xs">
+                        <pre className="max-w-[360px] whitespace-pre-wrap break-words">
+                          {prettyJson(r.payload)}
+                        </pre>
+                      </td>
+                      <td className="border-b border-zinc-100 px-3 py-2 text-sm">
+                        <div className="flex flex-wrap gap-2">
+                          <Button variant="outline" size="sm" onClick={() => confirmEvent(r)}>
+                            Confirm
+                          </Button>
+                          <Button variant="danger" size="sm" onClick={() => rejectEvent(r)}>
+                            Reject
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
         )}
