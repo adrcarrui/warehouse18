@@ -3,8 +3,14 @@ from sqlalchemy import select, or_
 from sqlalchemy.orm import Session
 
 from warehouse18.infrastructure.db import get_db
-from warehouse18.domain.models import Location
-from warehouse18.presentation.api.schemas import LocationCreateIn, LocationUpdateIn, LocationOut, PageOut
+from warehouse18.domain.models import Location, Aisle, DeviceAlias, DeviceGroup
+from warehouse18.presentation.api.schemas import (
+    LocationCreateIn,
+    LocationUpdateIn,
+    LocationOut,
+    CandidateLocationsOut,
+    PageOut,
+)
 from sqlalchemy.exc import IntegrityError
 
 from warehouse18.presentation.api.paging import paginate
@@ -12,6 +18,49 @@ from warehouse18.presentation.api.pagination_headers import set_pagination_heade
 
 router = APIRouter(prefix="/locations", tags=["locations"])
 
+def extract_item_prefix(item_key: str) -> str:
+    value = (item_key or "").strip().upper()
+
+    if not value:
+        raise HTTPException(status_code=409, detail="item_key is required")
+
+    if "-" not in value:
+        raise HTTPException(
+            status_code=409,
+            detail="item_key must contain a prefix separated by '-'",
+        )
+
+    prefix = value.split("-", 1)[0].strip()
+
+    if not prefix:
+        raise HTTPException(status_code=409, detail="item_key prefix is empty")
+
+    return prefix
+
+
+def resolve_device_group_from_item_key(
+    db: Session,
+    item_key: str,
+) -> tuple[str, DeviceGroup]:
+    prefix = extract_item_prefix(item_key)
+
+    row = (
+        db.query(DeviceAlias, DeviceGroup)
+        .join(DeviceGroup, DeviceGroup.id == DeviceAlias.device_group_id)
+        .filter(DeviceAlias.alias_code == prefix)
+        .filter(DeviceAlias.is_active.is_(True))
+        .filter(DeviceGroup.is_active.is_(True))
+        .first()
+    )
+
+    if not row:
+        raise HTTPException(
+            status_code=409,
+            detail=f"No active device group alias found for prefix '{prefix}'",
+        )
+
+    _, device_group = row
+    return prefix, device_group
 
 @router.post("/", response_model=LocationOut)
 def create_location(body: LocationCreateIn, db: Session = Depends(get_db)):
@@ -86,6 +135,47 @@ def list_locations(
         pages=pages,
     )
 
+@router.get("/candidates", response_model=CandidateLocationsOut)
+def candidate_locations(
+    item_key: str = Query(..., min_length=1, max_length=200),
+    aisle_code: str = Query(..., min_length=1, max_length=50),
+    db: Session = Depends(get_db),
+):
+    prefix, device_group = resolve_device_group_from_item_key(db, item_key)
+
+    aisle = (
+        db.query(Aisle)
+        .filter(Aisle.code == aisle_code.strip().upper())
+        .filter(Aisle.is_active.is_(True))
+        .first()
+    )
+
+    if not aisle:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Active aisle not found: {aisle_code}",
+        )
+
+    locations = (
+        db.query(Location)
+        .filter(Location.aisle_id == aisle.id)
+        .filter(Location.device_group_id == device_group.id)
+        .filter(Location.is_active.is_(True))
+        .order_by(
+            Location.rack_code.asc(),
+            Location.shelf_code.asc(),
+            Location.name.asc(),
+        )
+        .all()
+    )
+
+    return CandidateLocationsOut(
+        item_key=item_key,
+        item_prefix=prefix,
+        aisle_code=aisle.code,
+        device_group_code=device_group.code,
+        locations=locations,
+    )
 
 @router.get("/{location_id}", response_model=LocationOut)
 def get_location(location_id: int, db: Session = Depends(get_db)):

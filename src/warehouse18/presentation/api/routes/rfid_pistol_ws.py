@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from warehouse18.presentation.api.ws_manager import ws_manager
 
-router = APIRouter(prefix="/api/rfid/pistol", tags=["rfid-pistol"])
+router = APIRouter(prefix="/rfid/pistol", tags=["rfid-pistol"])
 
 
 @router.websocket("/ws/{device_id}")

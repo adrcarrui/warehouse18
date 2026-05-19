@@ -44,6 +44,14 @@ class Movement(Base):
 
     user = relationship("User", foreign_keys=[user_id])
 
+    detected_aisle_id = Column(
+    BigInteger,
+    ForeignKey("aisles.id", ondelete="SET NULL"),
+    nullable=True,
+        )
+
+    detected_aisle = relationship("Aisle")
+
     @property
     def user_name(self) -> str | None:
         return self.user.username if self.user else None

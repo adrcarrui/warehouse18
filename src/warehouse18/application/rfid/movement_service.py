@@ -12,6 +12,7 @@ from warehouse18.domain.models.location import Location
 from warehouse18.domain.models.movement import Movement
 from warehouse18.domain.models.movement_type import MovementType as LocalMovementType
 from warehouse18.domain.models.user import User
+from warehouse18.domain.models.aisle import Aisle
 
 log = logging.getLogger("warehouse18.rfid.movement")
 
@@ -54,6 +55,51 @@ def movement_type_by_name(db: Session, name: str) -> LocalMovementType | None:
 def get_movement_by_id(db: Session, movement_id: int) -> Movement | None:
     return db.query(Movement).filter(Movement.id == movement_id).first()
 
+def normalize_aisle_code(value: str | None) -> str | None:
+    if not value:
+        return None
+
+    code = str(value).strip().upper()
+
+    if not code:
+        return None
+
+    if code in ("ENTRANCE", "ENTRADA"):
+        return "AISLE0"
+
+    if code.startswith("AISLE_"):
+        return "AISLE" + code.split("_", 1)[1]
+
+    if code.startswith("PASILLO_"):
+        return "AISLE" + code.split("_", 1)[1]
+
+    return code
+
+
+def resolve_detected_aisle_id(db: Session, current_route) -> int | None:
+    aisle_code = normalize_aisle_code(getattr(current_route, "aisle_code", None))
+
+    if not aisle_code:
+        return None
+
+    aisle = (
+        db.query(Aisle)
+        .filter(Aisle.code == aisle_code)
+        .filter(Aisle.is_active.is_(True))
+        .first()
+    )
+
+    if aisle is None:
+        log.warning(
+            "RFID detected aisle not found | route_aisle_code=%s normalized_code=%s antenna=%s zone=%s",
+            getattr(current_route, "aisle_code", None),
+            aisle_code,
+            getattr(current_route, "antenna", None),
+            getattr(current_route, "zone_id", None),
+        )
+        return None
+
+    return int(aisle.id)
 
 # -------------------------------------------------
 # Create preventive movement
@@ -87,8 +133,9 @@ def create_preventive_movement(
         f"antenna={antenna} | "
         f"rssi={rssi} | "
         f"logical_name={current_route.logical_name} | "
-        f"aisle_id={current_route.aisle_id}"
+        f"aisle_code={getattr(current_route, 'aisle_code', None)}"
     )
+    detected_aisle_id = resolve_detected_aisle_id(db, current_route)
 
     mv = Movement(
         movement_type_id=mt.id,
@@ -114,6 +161,7 @@ def create_preventive_movement(
         report_reason=None,
         is_preventive=True,
         rfid_status="pending_enrichment",
+        detected_aisle_id=detected_aisle_id,
     )
 
     db.add(mv)

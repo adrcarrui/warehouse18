@@ -7,7 +7,7 @@ from typing import Literal, Optional
 
 from warehouse18.presentation.api.ws_manager import ws_manager
 
-router = APIRouter(prefix="/api/rfid/pistol", tags=["rfid-pistol"])
+router = APIRouter(prefix="/rfid/pistol", tags=["rfid-pistol"])
 
 
 class SendTargetEpcIn(BaseModel):

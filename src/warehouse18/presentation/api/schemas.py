@@ -111,6 +111,19 @@ class LocationOut(ORMBase):
     type: str
     parent_id: Optional[int] = None
     is_active: bool
+    aisle_id: Optional[int] = None
+    device_group_id: Optional[int] = None
+    rack_code: Optional[str] = None
+    shelf_code: Optional[str] = None
+    is_warehouse_location: bool = False
+
+
+class CandidateLocationsOut(BaseModel):
+    item_key: str
+    item_prefix: str
+    aisle_code: str
+    device_group_code: str
+    locations: list[LocationOut]
 
 class ItemCreateIn(BaseModel):
     name: str = Field(min_length=1)
@@ -214,6 +227,12 @@ class MovementTypeOut(ORMBase):
     affects_location: bool
     stock_sign: int
 
+class MovementTypeUpdateIn(BaseModel):
+    movement_type_code: str
+
+class MovementDescriptionUpdateIn(BaseModel):
+    notes: Optional[str] = None
+
 class MovementCreateIn(BaseModel):
     movement_type_id: int
 
@@ -222,6 +241,7 @@ class MovementCreateIn(BaseModel):
 
     from_location_id: Optional[int] = None
     to_location_id: Optional[int] = None
+    detected_aisle_id: Optional[int] = None
 
     reference_type: Optional[str] = None  # 'asset' | 'container'
     reference_id: Optional[int] = None
@@ -251,6 +271,7 @@ class MovementOut(ORMBase):
 
     item_key: Optional[str] = None
     mysim_user_id: Optional[int] = None
+    detected_aisle_id: Optional[int] = None
 
     review_status: str
     review_note: Optional[str] = None
@@ -288,6 +309,9 @@ class ItemLocationOut(BaseModel):
 
     movement_date: str | None = None
     raw: dict | None = None
+
+class MovementSetDestinationIn(BaseModel):
+    location_id: int
 
 class MovementQuantityUpdateIn(BaseModel):
     quantity: Optional[Decimal] = Field(default=None, gt=0)

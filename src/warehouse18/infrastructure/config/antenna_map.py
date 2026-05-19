@@ -22,11 +22,28 @@ class RouteConfig:
     door_id: str
     zone_id: str
     zone_role: str
-    aisle_id: str
     logical_name: str
     location_id: int
+    aisle_code: str | None = None
     mysim_location_env: str | None = None
     enabled: bool = True
+
+    @property
+    def aisle_id(self) -> str | None:
+        if not self.aisle_code:
+            return None
+
+        code = str(self.aisle_code).strip().upper()
+
+        if code == "AISLE0":
+            return "ENTRANCE"
+
+        if code.startswith("AISLE") and not code.startswith("AISLE_"):
+            suffix = code.replace("AISLE", "", 1)
+            if suffix.isdigit():
+                return f"AISLE_{suffix}"
+
+        return code
 
 
 @dataclass(frozen=True)
@@ -56,6 +73,25 @@ def _parse_str(v: Any, field: str) -> str:
         raise ValueError(f"{field} cannot be empty")
     return value
 
+def _normalize_aisle_code(v: Any) -> str | None:
+    if v is None:
+        return None
+
+    value = str(v).strip().upper()
+
+    if not value:
+        return None
+
+    if value == "ENTRADA":
+        return "AISLE0"
+
+    if value.startswith("PASILLO_"):
+        return "AISLE" + value.split("_", 1)[1]
+
+    if value.startswith("AISLE_"):
+        return "AISLE" + value.split("_", 1)[1]
+
+    return value
 
 def _load_v2(raw: dict[str, Any]) -> AntennaTopology:
     readers_raw = raw.get("readers") or []
@@ -81,6 +117,9 @@ def _load_v2(raw: dict[str, Any]) -> AntennaTopology:
     for door in doors_raw:
         door_id = _parse_str(door.get("door_id"), "door_id")
         reader_id = _parse_str(door.get("reader_id"), "reader_id")
+        door_aisle_code = _normalize_aisle_code(
+            door.get("aisle_code") or door.get("aisle_id")
+            )
 
         if reader_id not in readers:
             raise ValueError(
@@ -105,9 +144,12 @@ def _load_v2(raw: dict[str, Any]) -> AntennaTopology:
                 door_id=door_id,
                 zone_id=_parse_str(z.get("zone_id"), "zone_id").upper(),
                 zone_role=_parse_str(z.get("zone_role"), "zone_role").upper(),
-                aisle_id=_parse_str(z.get("aisle_id"), "aisle_id").upper(),
                 logical_name=str(z.get("logical_name") or f"{door_id}:{antenna}").strip(),
                 location_id=_parse_int(z.get("location_id"), "location_id"),
+                aisle_code=(
+                    _normalize_aisle_code(z.get("aisle_code") or z.get("aisle_id"))
+                    or door_aisle_code
+                ),
                 mysim_location_env=(
                     str(z.get("mysim_location_env")).strip()
                     if z.get("mysim_location_env")
@@ -156,6 +198,7 @@ def _load_legacy_v1(raw: dict[str, Any]) -> AntennaTopology:
             location_id=_parse_int(location_id, "location_id"),
             mysim_location_env=None,
             enabled=enabled,
+            aisle_code=None,
         )
 
     return AntennaTopology(readers=readers, routes=routes)

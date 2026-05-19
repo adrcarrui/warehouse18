@@ -48,6 +48,8 @@ def run_backend():
         "uvicorn",
         ASGI_APP,
         "--reload",
+        "--host",
+        "0.0.0.0",
         "--app-dir",
         "src",
         "--port",

@@ -23,7 +23,7 @@
           "location_id": 2790,
           "mysim_location_env": "MYSIM_RFID_LOC_AISLE_1",
           "enabled": true,
-          "aisle_id": "AISLE_1"
+          "aisle_code": "AISLE1"
         },
         {
           "antenna": 2,
@@ -33,9 +33,8 @@
           "location_id": 2790,
           "mysim_location_env": "MYSIM_RFID_LOC_AISLE_1",
           "enabled": true,
-          "aisle_id": "AISLE_1"
+          "aisle_code": "AISLE1"
         },
-
         {
           "antenna": 3,
           "zone_id": "AISLE_2_A",
@@ -44,7 +43,7 @@
           "location_id": 2791,
           "mysim_location_env": "MYSIM_RFID_LOC_AISLE_2",
           "enabled": true,
-          "aisle_id": "AISLE_2"
+          "aisle_code": "AISLE2"
         },
         {
           "antenna": 4,
@@ -54,9 +53,8 @@
           "location_id": 2791,
           "mysim_location_env": "MYSIM_RFID_LOC_AISLE_2",
           "enabled": true,
-          "aisle_id": "AISLE_2"
+          "aisle_code": "AISLE2"
         },
-
         {
           "antenna": 5,
           "zone_id": "AISLE_3_A",
@@ -65,7 +63,7 @@
           "location_id": 2792,
           "mysim_location_env": "MYSIM_RFID_LOC_AISLE_3",
           "enabled": true,
-          "aisle_id": "AISLE_3"
+          "aisle_code": "AISLE3"
         },
         {
           "antenna": 6,
@@ -75,9 +73,8 @@
           "location_id": 2792,
           "mysim_location_env": "MYSIM_RFID_LOC_AISLE_3",
           "enabled": true,
-          "aisle_id": "AISLE_3"
+          "aisle_code": "AISLE3"
         },
-
         {
           "antenna": 7,
           "zone_id": "AISLE_4_A",
@@ -86,7 +83,7 @@
           "location_id": 2793,
           "mysim_location_env": "MYSIM_RFID_LOC_AISLE_4",
           "enabled": true,
-          "aisle_id": "AISLE_4"
+          "aisle_code": "AISLE4"
         },
         {
           "antenna": 8,
@@ -96,9 +93,8 @@
           "location_id": 2793,
           "mysim_location_env": "MYSIM_RFID_LOC_AISLE_4",
           "enabled": true,
-          "aisle_id": "AISLE_4"
+          "aisle_code": "AISLE4"
         },
-
         {
           "antenna": 9,
           "zone_id": "AISLE_5_A",
@@ -107,7 +103,7 @@
           "location_id": 2794,
           "mysim_location_env": "MYSIM_RFID_LOC_AISLE_5",
           "enabled": true,
-          "aisle_id": "AISLE_5"
+          "aisle_code": "AISLE5"
         },
         {
           "antenna": 10,
@@ -117,9 +113,8 @@
           "location_id": 2794,
           "mysim_location_env": "MYSIM_RFID_LOC_AISLE_5",
           "enabled": true,
-          "aisle_id": "AISLE_5"
+          "aisle_code": "AISLE5"
         },
-
         {
           "antenna": 11,
           "zone_id": "AISLE_6_A",
@@ -128,7 +123,7 @@
           "location_id": 2795,
           "mysim_location_env": "MYSIM_RFID_LOC_AISLE_6",
           "enabled": true,
-          "aisle_id": "AISLE_6"
+          "aisle_code": "AISLE6"
         },
         {
           "antenna": 12,
@@ -138,28 +133,27 @@
           "location_id": 2795,
           "mysim_location_env": "MYSIM_RFID_LOC_AISLE_6",
           "enabled": true,
-          "aisle_id": "AISLE_6"
+          "aisle_code": "AISLE6"
         },
-
         {
           "antenna": 13,
           "zone_id": "ENTRANCE",
           "zone_role": "A",
-          "logical_name": "Entrada almacén 18 antena 13",
+          "logical_name": "Entrada almacen 18 antena 13",
           "location_id": 1493,
           "mysim_location_env": "MYSIM_RFID_ENTRANCE",
           "enabled": true,
-          "aisle_id": "ENTRANCE"
+          "aisle_code": "AISLE0"
         },
         {
           "antenna": 14,
           "zone_id": "ENTRANCE",
           "zone_role": "B",
-          "logical_name": "Entrada almacén 18 antena 14",
+          "logical_name": "Entrada almacen 18 antena 14",
           "location_id": 1493,
           "mysim_location_env": "MYSIM_RFID_ENTRANCE",
           "enabled": true,
-          "aisle_id": "ENTRANCE"
+          "aisle_code": "AISLE0"
         }
       ]
     }
