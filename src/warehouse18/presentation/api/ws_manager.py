@@ -1,12 +1,8 @@
 # src/warehouse18/presentation/api/ws_manager.py
-from __future__ import annotations
-
-from fastapi import APIRouter, Depends, Request
+from fastapi import WebSocket
 from typing import Dict, Optional
 import asyncio
 
-
-router = APIRouter(prefix="/ws_manager", tags=["ws_manager"])
 
 class DeviceConnectionManager:
     def __init__(self) -> None:

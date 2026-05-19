@@ -23,12 +23,12 @@ def main() -> int:
     load_dotenv()
 
     cfg = MySimConfig.from_env()
-    cfg = replace(cfg, timeout=90)
+    cfg = replace(cfg, timeout=900)
     client = MySimClient(cfg)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    resp = client.get(entity="location", limit=3500)
+    resp = client.get(entity="location", limit=5000)
     print(type(resp))
     print(json.dumps(resp, ensure_ascii=False, indent=2)[:8000])
     rows = rows_normalized(resp)

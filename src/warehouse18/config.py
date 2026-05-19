@@ -24,6 +24,17 @@ class Settings(BaseSettings):
     rfid_forward_to_ingest: bool = True
     rfid_emit_enable: bool = False
 
+    email_enabled: bool = False
+    email_smtp_host: str = ""
+    email_smtp_port: int = 587
+    email_smtp_user: str = ""
+    email_smtp_password: str = ""
+    email_from: str = ""
+    email_to_alerts: str = ""
+    email_use_tls: bool = True
+    email_use_ssl: bool = False
+    
+    email_timeout_seconds: int = 10
     model_config = SettingsConfigDict(
         env_prefix="WAREHOUSE18_",
         env_file=str(BASE_DIR / ".env"),

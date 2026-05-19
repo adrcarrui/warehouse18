@@ -47,8 +47,9 @@ from warehouse18.presentation.api.routes.rfid_schema import router as rfid_schem
 from warehouse18.presentation.api.routes.integrations_health import router as integrations_health_router
 from warehouse18.application.settings_service import SettingsService
 from warehouse18.presentation.api.routes.mysim_item_location import router as mysim_item_location_router
-from warehouse18.presentation.api.ws_manager import router as pistol_ws_router
+from warehouse18.presentation.api.routes.rfid_pistol_ws import router as pistol_ws_router
 from warehouse18.presentation.api.routes.rfid_pistol_commands import router as pistol_commands_router
+from warehouse18.presentation.api.routes.alert_emails import router as alert_emails_router
 
 
 
@@ -91,6 +92,7 @@ app.include_router(integrations_health_router, prefix=settings.api_prefix)
 app.include_router(mysim_item_location_router, prefix=settings.api_prefix)
 app.include_router(pistol_ws_router, prefix=settings.api_prefix)
 app.include_router(pistol_commands_router, prefix=settings.api_prefix)
+app.include_router(alert_emails_router, prefix=settings.api_prefix)
 
 app.state.settings_service = SettingsService(ttl_seconds=2)
 
