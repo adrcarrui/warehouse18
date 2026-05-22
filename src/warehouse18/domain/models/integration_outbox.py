@@ -6,7 +6,7 @@ from sqlalchemy import BigInteger, CheckConstraint, DateTime, Integer, Text, tex
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from warehouse18.infrastructure.db import Base
+from warehouse18.domain.models.base import Base
 
 
 class IntegrationOutbox(Base):

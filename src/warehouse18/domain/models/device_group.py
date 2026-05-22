@@ -14,6 +14,17 @@ class DeviceGroup(Base):
 
     aliases = relationship("DeviceAlias", back_populates="device_group")
 
+    locations = relationship(
+            "Location",
+            back_populates="device_group",
+        )
+
+    aisle_links = relationship(
+        "AisleDeviceGroup",
+        back_populates="device_group",
+        cascade="all, delete-orphan",
+    )
+
 
 class DeviceAlias(Base):
     __tablename__ = "device_aliases"

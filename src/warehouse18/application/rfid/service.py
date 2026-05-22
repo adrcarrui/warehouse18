@@ -155,7 +155,7 @@ class RFIDReaderService:
             parsed = parse_epc96(epc, self._epc_schema)
             return (
                 parsed.magic == self._epc_schema.magic
-                and parsed.version == self._epc_schema.version
+                #and parsed.version == self._epc_schema.version
                 and parsed.checksum_ok
                 and parsed.family_name is not None
             )
