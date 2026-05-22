@@ -1,7 +1,9 @@
 {
-  "magic_hex": "17C0",
-  "version": 0,
+  "format": "warehouse18-epc96-v1",
+  "magic_hex": "18",
   "checksum": "xor8",
+  "object_id_bytes": 3,
+  "tid_serial_bytes": 6,
   "families": {
     "USER": 0,
     "GEN": 1,
@@ -14,9 +16,14 @@
     "CHT": 8,
     "C295": 9,
     "DARPT": 10,
-    "CN235": 11
+    "CN235": 11,
+    "LOCATION": 32,
+    "TOOL": 33,
+    "CONTAINER": 34,
+    "DOCUMENT": 35
   },
   "display_padding": {
+    "USER": 6,
     "GEN": 6,
     "A400M": 6,
     "A400": 3,
@@ -26,6 +33,11 @@
     "ITC": 6,
     "CHT": 8,
     "C295": 6,
-    "DARPT": 6
+    "DARPT": 6,
+    "CN235": 6,
+    "LOCATION": 6,
+    "TOOL": 6,
+    "CONTAINER": 6,
+    "DOCUMENT": 6
   }
 }

@@ -12,6 +12,10 @@ from .app_setting import AppSetting
 from .rfid_event_log import RfidEventLog
 from .aisle import Aisle
 from .device_group import DeviceGroup, DeviceAlias
+from .aisle_device_group import AisleDeviceGroup
+from .movement_asset import MovementAsset
+from .asset_enrichment import AssetEnrichment
+from .integration_outbox import IntegrationOutbox
 
 __all__ = [
     "Base", 
@@ -29,4 +33,8 @@ __all__ = [
     "Aisle", 
     "DeviceGroup",
     "DeviceAlias",
+    "AisleDeviceGroup"
+    "MovementAsset",
+    "AssetEnrichment",
+    "IntegrationOutbox",
     ]

@@ -7,7 +7,12 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from warehouse18.application.rfid.epc96 import load_epc_schema, parse_epc96
+from warehouse18.application.rfid.epc96 import (
+    EPCSchema,
+    format_item_key,
+    load_epc_schema,
+    parse_epc96,
+)
 from warehouse18.domain.models.location import Location
 from warehouse18.domain.models.movement import Movement
 from warehouse18.domain.models.movement_type import MovementType as LocalMovementType
@@ -22,13 +27,14 @@ log = logging.getLogger("warehouse18.rfid.movement")
 # -------------------------------------------------
 
 def build_item_key_from_epc(epc: str, epc_schema_path: str) -> str:
-    schema = load_epc_schema(Path(epc_schema_path))
+    schema: EPCSchema = load_epc_schema(epc_schema_path)
     parsed = parse_epc96(epc, schema)
 
-    if parsed.family_name and parsed.serial is not None:
-        return f"{parsed.family_name}-{parsed.serial:06d}"
+    item_key = format_item_key(parsed, schema)
+    if item_key is None:
+        return f"UNKNOWN-{parsed.object_id:06d}"
 
-    return epc
+    return item_key
 
 
 # -------------------------------------------------
@@ -75,6 +81,16 @@ def normalize_aisle_code(value: str | None) -> str | None:
 
     return code
 
+def resolve_tracking_mode_from_epc(epc: str, epc_schema_path: str) -> tuple[str, str | None]:
+    schema: EPCSchema = load_epc_schema(epc_schema_path)
+    parsed = parse_epc96(epc, schema)
+
+    tid_hex = getattr(parsed, "tid_hex", None) or getattr(parsed, "tid", None)
+
+    if tid_hex:
+        return "serialized", str(tid_hex).upper()
+
+    return "bulk", None
 
 def resolve_detected_aisle_id(db: Session, current_route) -> int | None:
     aisle_code = normalize_aisle_code(getattr(current_route, "aisle_code", None))
@@ -123,11 +139,25 @@ def create_preventive_movement(
     mt = movement_type_by_name(db, movement_type_name)
     if mt is None:
         raise ValueError(f"movement_type_not_found_by_name:{movement_type_name}")
+    
+    detected_asset_code = epc.strip().upper()
 
-    item_key = build_item_key_from_epc(epc, epc_schema_path)
+    schema = load_epc_schema(epc_schema_path)
+    parsed = parse_epc96(detected_asset_code, schema)
+
+    item_key = format_item_key(parsed, schema)
+    if item_key is None:
+        item_key = f"UNKNOWN-{parsed.object_id:06d}"
+
+    detected_tracking_mode = parsed.tracking_mode
+    detected_tid_hex = (
+        parsed.tid_serial_hex
+        if parsed.tracking_mode == "serialized"
+        else None
+    )
 
     notes = (
-        f"RFID preventive movement | epc={epc} | "
+        f"RFID preventive movement | epc={detected_asset_code} | "
         f"door_id={current_route.door_id} | "
         f"reader_id={current_route.reader_id} | "
         f"antenna={antenna} | "
@@ -162,6 +192,9 @@ def create_preventive_movement(
         is_preventive=True,
         rfid_status="pending_enrichment",
         detected_aisle_id=detected_aisle_id,
+        detected_asset_code=detected_asset_code,
+        detected_tracking_mode=detected_tracking_mode,
+        detected_tid_hex=detected_tid_hex,
     )
 
     db.add(mv)

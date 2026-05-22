@@ -119,10 +119,10 @@ class LocationOut(ORMBase):
 
 
 class CandidateLocationsOut(BaseModel):
-    item_key: str
-    item_prefix: str
-    aisle_code: str
-    device_group_code: str
+    item_key: str | None = None
+    item_prefix: str | None = None
+    aisle_code: str | None = None
+    device_group_code: str | None = None
     locations: list[LocationOut]
 
 class ItemCreateIn(BaseModel):
@@ -270,6 +270,7 @@ class MovementOut(ORMBase):
     notes: Optional[str] = None
 
     item_key: Optional[str] = None
+    detected_asset_code: Optional[str] = None
     mysim_user_id: Optional[int] = None
     detected_aisle_id: Optional[int] = None
 
@@ -287,6 +288,8 @@ class MovementOut(ORMBase):
     report_reason: Optional[str] = None
     is_preventive: bool
     rfid_status: Optional[str] = None
+    detected_tracking_mode: Optional[str] = None
+    detected_tid_hex: Optional[str] = None
 
 class ItemLocationOut(BaseModel):
     item_key: str
@@ -383,3 +386,43 @@ class MovementConfirmIn(BaseModel):
 class MovementRejectIn(BaseModel):
     reviewed_by_user_id: Optional[int] = None
     review_note: Optional[str] = None
+
+class MovementQuantityUpdateIn(BaseModel):
+    quantity: Decimal = Field(gt=0)
+
+class ConfirmSerializedAssetIn(BaseModel):
+    asset_code: Optional[str] = None
+    item_code: Optional[str] = None
+    reviewed_by_user_id: Optional[int] = None
+    review_note: Optional[str] = None
+    create_enrichment: bool = True
+    enqueue_sync: bool = True
+
+
+class ConfirmSerializedAssetOut(BaseModel):
+    status: str
+    movement_id: int
+    movement_type_code: str
+    item_id: int
+    item_code: str
+    asset_id: int
+    asset_code: str
+    message: str
+
+class ConfirmBulkMovementIn(BaseModel):
+    container_code: Optional[str] = None
+    item_code: Optional[str] = None
+    reviewed_by_user_id: Optional[int] = None
+    review_note: Optional[str] = None
+    enqueue_sync: bool = True
+
+class ConfirmBulkMovementOut(BaseModel):
+    status: str
+    movement_id: int
+    movement_type_code: str
+    item_id: int
+    item_code: str
+    container_id: Optional[int] = None
+    container_code: Optional[str] = None
+    quantity: Optional[Decimal] = None
+    message: str

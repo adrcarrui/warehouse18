@@ -24,10 +24,13 @@ type RfidEvent = {
 };
 
 type EpcSchema = {
+  format?: string;
   magic_hex?: string;
-  version?: number;
   checksum?: string;
+  object_id_bytes?: number;
+  tid_serial_bytes?: number;
   families?: Record<string, number>;
+  display_padding?: Record<string, number>;
 };
 
 const MAX_EVENTS = 250;
@@ -68,42 +71,57 @@ function getFamilyMap(schema: EpcSchema | null) {
   return map;
 }
 
+function xor8Hex(hex: string) {
+  let checksum = 0;
+
+  for (let i = 0; i < hex.length; i += 2) {
+    checksum ^= parseInt(hex.slice(i, i + 2), 16);
+  }
+
+  return checksum;
+}
+
+function getFamilyName(schema: EpcSchema | null | undefined, familyCode: number, fallback: string) {
+  if (!schema?.families) return fallback;
+
+  for (const [name, code] of Object.entries(schema.families)) {
+    if (Number(code) === familyCode) return name;
+  }
+
+  return fallback;
+}
+
 function parsePartId(epc?: string, schema?: EpcSchema | null) {
-  const value = safeStr(epc).trim().toUpperCase();
+  const value = safeStr(epc).trim().toUpperCase().replace(/\s+/g, "");
   if (!value || value.length !== 24) return "";
 
-  const familyHex = value.slice(6, 8);
-  const serialHex = value.slice(8, 22);
+  const magicHex = value.slice(0, 2);
+  const expectedMagic = safeStr(schema?.magic_hex || "18").trim().toUpperCase();
+
+  if (expectedMagic && magicHex !== expectedMagic) return "";
+
+  const familyHex = value.slice(2, 4);
+  const objectIdHex = value.slice(4, 10);
+  const checksumHex = value.slice(22, 24);
+
   const familyCode = parseInt(familyHex, 16);
+  const familyName = getFamilyName(schema, familyCode, familyHex);
 
-  let familyName = familyHex;
+  const objectId = parseInt(objectIdHex, 16);
+  const padding = schema?.display_padding?.[familyName] ?? 6;
 
-  console.log("RFID parsePartId", {
-    epc: value,
-    familyHex,
-    familyCode,
-    schema,
-    families: schema?.families,
-  });
+  const objectIdText = Number.isNaN(objectId)
+    ? objectIdHex
+    : String(objectId).padStart(padding, "0");
 
-  if (schema?.families) {
-    for (const [name, code] of Object.entries(schema.families)) {
-      console.log("Comparando familia", { name, code, familyCode });
-      if (Number(code) === familyCode) {
-        familyName = name;
-        break;
-      }
-    }
+  const checksum = parseInt(checksumHex, 16);
+  const checksumOk = xor8Hex(value.slice(0, 22)) === checksum;
+
+  if (!checksumOk) {
+    return `${familyName}-${objectIdText} ⚠ checksum`;
   }
 
-  let serialDec = "";
-  try {
-    serialDec = BigInt("0x" + serialHex).toString();
-  } catch {
-    serialDec = serialHex;
-  }
-
-  return `${familyName}-${serialDec}`;
+  return `${familyName}-${objectIdText}`;
 }
 
 export default function RFIDMonitorPage() {

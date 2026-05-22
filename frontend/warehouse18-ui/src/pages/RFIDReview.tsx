@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import { CheckCircle2, XCircle, Minus, Plus, Save } from "lucide-react";
+import { CheckCircle2, XCircle, Minus, Plus, Save, ChevronUp, ChevronDown } from "lucide-react";
 import { apiGet, apiPost, apiJson } from "../api";
 import type { PageMeta, PageOut } from "../api";
 import { AppShell } from "../app/AppShell";
@@ -31,6 +31,12 @@ type MovementOut = {
   mysim_synced_at?: string | null;
   mysim_sync_error?: string | null;
   mysim_movement_id?: string | null;
+  is_preventive: boolean;
+  rfid_status: string | null;
+  detected_asset_code?: string | null;
+  detected_tracking_mode?: "serialized" | "bulk" | "unknown" | null;
+  detected_tid_hex?: string | null;
+  item_is_serialized?: boolean | null;
 };
 
 type MovementTypeOut = {
@@ -112,7 +118,38 @@ type CandidateState = {
   loading: boolean;
   error: string | null;
   settingDestinationId: number | null;
+
+  loadedMovementTypeId: number | null;
+  loadedDetectedAisleId: number | null;
+  loadedRfidStatus: string | null;
 };
+
+
+
+function safeStr(value: unknown) {
+  return value == null ? "" : String(value);
+}
+
+type ConfirmKind = "serialized" | "bulk" | "normal";
+
+function inferConfirmKind(row: MovementOut): ConfirmKind {
+  const assetCode = getMovementAssetCode(row);
+  const itemCode = getMovementItemCode(row);
+
+  if (!assetCode || !itemCode) {
+    return "normal";
+  }
+
+  if (row.detected_tracking_mode === "serialized") {
+    return "serialized";
+  }
+
+  if (row.detected_tracking_mode === "bulk") {
+    return "bulk";
+  }
+
+  return "normal";
+}
 
 function unwrapApiData<T>(response: unknown): T {
   if (response && typeof response === "object" && "data" in response) {
@@ -135,6 +172,10 @@ function prettyJson(v: unknown) {
   } catch {
     return String(v);
   }
+}
+
+function shouldUseSerializedAssetConfirm(row: MovementOut): boolean {
+  return Boolean(row.detected_asset_code && row.item_key);
 }
 
 function toNumberOrZero(v: string) {
@@ -258,15 +299,22 @@ function movementOptionStyle(code: MovementCode): CSSProperties {
   };
 }
 
-function destinationOptionLabel(loc: LocationOut) {
-  const base = loc.name || loc.code;
-  const rackShelf =
-    loc.rack_code || loc.shelf_code
-      ? ` · Rack ${loc.rack_code ?? "-"} · Shelf ${loc.shelf_code ?? "-"}`
-      : "";
-  const scope = loc.is_warehouse_location ? " · Warehouse" : " · Outside";
+function destinationOptionLabel(loc: LocationOut, deviceGroupCode?: string | null) {
+  const rackCode = safeStr(loc.rack_code).trim();
+  const shelfCode = safeStr(loc.shelf_code).trim().toUpperCase();
+  const groupCode = safeStr(deviceGroupCode).trim().toUpperCase();
 
-  return `${base}${rackShelf}${scope}`;
+  if (loc.is_warehouse_location && groupCode && (rackCode || shelfCode)) {
+    return `${groupCode} ${rackCode}${shelfCode}`;
+  }
+
+  const base = loc.name || loc.code;
+
+  if (rackCode || shelfCode) {
+    return `${base}`;{/* · Rack ${rackCode || "-"} · Shelf ${shelfCode || "-"}`;*/}
+  }
+
+  return base;
 }
 
 function noteField(notes: string | null | undefined, key: string): string {
@@ -285,13 +333,29 @@ function emptyCandidateState(): CandidateState {
     loading: false,
     error: null,
     settingDestinationId: null,
+    loadedMovementTypeId: null,
+    loadedDetectedAisleId: null,
+    loadedRfidStatus: null,
   };
 }
-
+function normalizeSearchText(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
+}
 export default function RFIDReviewPage() {
   const [reviewerUserId, setReviewerUserId] = useState("1");
   const [confirmingMovementIds, setConfirmingMovementIds] = useState<number[]>([]);
   const [movementTypeUpdatingId, setMovementTypeUpdatingId] = useState<number | null>(null);
+  const [destinationSearchById, setDestinationSearchById] = useState<
+  Record<number, string>
+>({});
+
+const [destinationOpenRowId, setDestinationOpenRowId] = useState<number | null>(
+  null
+);
 
   const movementRejectNote = "Invalid reading or discarded movement";
   const eventRejectNote = "Incident reviewed and discarded";
@@ -367,32 +431,51 @@ export default function RFIDReviewPage() {
     candidateByMovementRef.current = candidateByMovement;
   }, [candidateByMovement]);
 
-  function movementSnapshot(rows: MovementOut[]) {
-    return rows.map((r) => ({
-      id: r.id,
-      movement_type_id: r.movement_type_id,
-      from_location_id: r.from_location_id ?? null,
-      to_location_id: r.to_location_id ?? null,
-      quantity: r.quantity == null ? null : String(r.quantity),
-      review_status: r.review_status,
-      notes: r.notes ?? "",
-      item_key: r.item_key ?? "",
-      user_id: r.user_id ?? null,
-      user_name: r.user_name ?? "",
-      updated_like: [
-        r.id,
-        r.movement_type_id,
-        r.from_location_id ?? null,
-        r.to_location_id ?? null,
-        r.quantity == null ? null : String(r.quantity),
-        r.review_status,
-        r.notes ?? "",
-        r.item_key ?? "",
-        r.user_id ?? null,
-        r.user_name ?? "",
-      ].join("|"),
-    }));
-  }
+function movementSnapshot(rows: MovementOut[]) {
+  return rows.map((r) => ({
+    id: r.id,
+    movement_type_id: r.movement_type_id,
+    from_location_id: r.from_location_id ?? null,
+    to_location_id: r.to_location_id ?? null,
+    quantity: r.quantity == null ? null : String(r.quantity),
+    review_status: r.review_status,
+    notes: r.notes ?? "",
+    item_key: r.item_key ?? "",
+    detected_asset_code: r.detected_asset_code ?? "",
+    reference_type: r.reference_type ?? "",
+    reference_id: r.reference_id ?? null,
+    user_id: r.user_id ?? null,
+    user_name: r.user_name ?? "",
+
+    is_preventive: r.is_preventive ?? false,
+    rfid_status: r.rfid_status ?? "",
+    detected_aisle_id: r.detected_aisle_id ?? null,
+    detected_tracking_mode: r.detected_tracking_mode ?? "",
+    detected_tid_hex: r.detected_tid_hex ?? "",
+
+    updated_like: [
+      r.id,
+      r.movement_type_id,
+      r.from_location_id ?? null,
+      r.to_location_id ?? null,
+      r.quantity == null ? null : String(r.quantity),
+      r.review_status,
+      r.notes ?? "",
+      r.item_key ?? "",
+      r.detected_asset_code ?? "",
+      r.reference_type ?? "",
+      r.reference_id ?? null,
+      r.user_id ?? null,
+      r.user_name ?? "",
+
+      r.is_preventive ?? false,
+      r.rfid_status ?? "",
+      r.detected_aisle_id ?? null,
+      r.detected_tracking_mode ?? "",
+      r.detected_tid_hex ?? "",
+    ].join("|"),
+  }));
+}
 
   async function loadUserMap() {
     try {
@@ -486,6 +569,9 @@ export default function RFIDReviewPage() {
         loading: true,
         error: null,
         settingDestinationId: prev[row.id]?.settingDestinationId ?? null,
+        loadedMovementTypeId: row.movement_type_id,
+        loadedDetectedAisleId: row.detected_aisle_id ?? null,
+        loadedRfidStatus: row.rfid_status ?? null,
       },
     }));
 
@@ -501,6 +587,9 @@ export default function RFIDReviewPage() {
           loading: false,
           error: null,
           settingDestinationId: prev[row.id]?.settingDestinationId ?? null,
+          loadedMovementTypeId: row.movement_type_id,
+          loadedDetectedAisleId: row.detected_aisle_id ?? null,
+          loadedRfidStatus: row.rfid_status ?? null,
         },
       }));
 
@@ -521,6 +610,9 @@ export default function RFIDReviewPage() {
           loading: false,
           error: e?.message ?? String(e),
           settingDestinationId: null,
+          loadedMovementTypeId: row.movement_type_id,
+          loadedDetectedAisleId: row.detected_aisle_id ?? null,
+          loadedRfidStatus: row.rfid_status ?? null,
         },
       }));
     }
@@ -537,6 +629,9 @@ export default function RFIDReviewPage() {
         loading: true,
         error: null,
         settingDestinationId: null,
+        loadedMovementTypeId: row.movement_type_id,
+        loadedDetectedAisleId: row.detected_aisle_id ?? null,
+        loadedRfidStatus: row.rfid_status ?? null,
       },
     }));
 
@@ -566,6 +661,9 @@ export default function RFIDReviewPage() {
           loading: false,
           error: e?.message ?? String(e),
           settingDestinationId: null,
+          loadedMovementTypeId: row.movement_type_id,
+          loadedDetectedAisleId: row.detected_aisle_id ?? null,
+          loadedRfidStatus: row.rfid_status ?? null,
         },
       }));
     } finally {
@@ -700,10 +798,35 @@ export default function RFIDReviewPage() {
         setMovementMeta(meta);
         setMovementPage(p);
       }
+    for (const item of items) {
+      const currentCandidate = candidateByMovementRef.current[item.id];
 
-      for (const item of items) {
-        void loadCandidateLocations(item);
-      }
+      const isReadyForLocation =
+        item.rfid_status === "ready_for_location" &&
+        item.detected_aisle_id != null;
+
+      const candidateWasLoadedForDifferentAisle =
+        currentCandidate?.loadedDetectedAisleId !== (item.detected_aisle_id ?? null);
+
+      const candidateWasLoadedForDifferentMovementType =
+        currentCandidate?.loadedMovementTypeId !== item.movement_type_id;
+
+      const candidateWasLoadedForDifferentRfidStatus =
+        currentCandidate?.loadedRfidStatus !== (item.rfid_status ?? null);
+
+      const shouldForceCandidateReload =
+        isReadyForLocation &&
+        (
+          !currentCandidate?.data ||
+          currentCandidate.data.locations.length === 0 ||
+          currentCandidate.error ||
+          candidateWasLoadedForDifferentAisle ||
+          candidateWasLoadedForDifferentMovementType ||
+          candidateWasLoadedForDifferentRfidStatus
+        );
+
+      void loadCandidateLocations(item, shouldForceCandidateReload);
+    }
     } catch (e: any) {
       if (!silent) {
         setErr(e?.message ?? String(e));
@@ -823,18 +946,41 @@ export default function RFIDReviewPage() {
     }
   }
 
-  function currentQtyValue(row: MovementOut, editingQtyMap: Record<number, string>) {
-    if (editingQtyMap[row.id] != null) return editingQtyMap[row.id];
-    if (row.quantity == null || row.quantity === "") return "1";
-    return String(row.quantity);
+  function currentQtyValue(
+    r: MovementOut,
+    editingQty: Record<number, string>
+  ): string {
+    const edited = editingQty[r.id];
+
+    if (edited !== undefined) {
+      return edited;
+    }
+
+    const qty = Number(r.quantity ?? 1);
+
+    if (!Number.isFinite(qty) || qty <= 0) {
+      return "1";
+    }
+
+    return String(Math.trunc(qty));
   }
 
+  function normalizeQtyForSave(value: string | number | null | undefined): number {
+    const qty = Number.parseInt(String(value ?? ""), 10);
+
+    if (!Number.isFinite(qty) || qty <= 0) {
+      return 1;
+    }
+
+    return qty;
+  }
+  
   async function saveMovementQuantity(row: MovementOut) {
     setErr(null);
 
     try {
       const raw = editingQty[row.id] ?? (row.quantity == null ? "1" : String(row.quantity));
-      const qty = Number(raw);
+      const qty = normalizeQtyForSave(raw);
 
       if (!Number.isFinite(qty) || qty <= 0) {
         setErr("Quantity must be greater than zero");
@@ -857,28 +1003,74 @@ export default function RFIDReviewPage() {
     }
   }
 
-  async function confirmMovement(row: MovementOut) {
-    if (confirmingMovementIds.includes(row.id)) return;
+function getMovementAssetCode(row: MovementOut): string | null {
+  return row.detected_asset_code?.trim() || null;
+}
 
-    setErr(null);
-    setConfirmingMovementIds((prev) => [...prev, row.id]);
+function getMovementItemCode(row: MovementOut): string | null {
+  return row.item_key?.trim() || null;
+}
 
-    try {
+function shouldUseSerializedAssetConfirm(row: MovementOut): boolean {
+  return Boolean(getMovementAssetCode(row) && getMovementItemCode(row));
+}
+
+async function confirmMovement(row: MovementOut) {
+  if (confirmingMovementIds.includes(row.id)) return;
+
+  setErr(null);
+  setConfirmingMovementIds((prev) => [...prev, row.id]);
+
+  try {
+    const assetCode = getMovementAssetCode(row);
+    const itemCode = getMovementItemCode(row);
+    const trackingMode = row.detected_tracking_mode ?? "unknown";
+
+    console.log("confirmMovement decision", {
+      id: row.id,
+      item_key: row.item_key,
+      detected_asset_code: row.detected_asset_code,
+      detected_tracking_mode: row.detected_tracking_mode,
+      detected_tid_hex: row.detected_tid_hex,
+      assetCode,
+      itemCode,
+      trackingMode,
+    });
+
+    if (assetCode && itemCode && trackingMode === "serialized") {
+      await apiPost(`/api/movements/${row.id}/confirm-serialized-asset`, {
+        asset_code: assetCode,
+        item_code: itemCode,
+        reviewed_by_user_id: reviewerId,
+        review_note: "Validated manually",
+        create_enrichment: true,
+        enqueue_sync: true,
+      });
+    } else if (assetCode && itemCode && trackingMode === "bulk") {
+      await apiPost(`/api/movements/${row.id}/confirm-bulk`, {
+        container_code: assetCode,
+        item_code: itemCode,
+        reviewed_by_user_id: reviewerId,
+        review_note: "Validated manually",
+        enqueue_sync: true,
+      });
+    } else {
       const payload: MovementReviewIn = {
         reviewed_by_user_id: reviewerId,
         note: "Validated manually",
       };
 
       await apiPost(`/api/movements/${row.id}/confirm`, payload);
-      await loadMovements(movementPageRef.current);
-      await loadEvents();
-    } catch (e: any) {
-      setErr(e?.message ?? String(e));
-    } finally {
-      setConfirmingMovementIds((prev) => prev.filter((id) => id !== row.id));
     }
-  }
 
+    await loadMovements(movementPageRef.current);
+    await loadEvents();
+  } catch (e: any) {
+    setErr(e?.message ?? String(e));
+  } finally {
+    setConfirmingMovementIds((prev) => prev.filter((id) => id !== row.id));
+  }
+}
   async function rejectMovement(row: MovementOut) {
     setErr(null);
 
@@ -1050,14 +1242,54 @@ export default function RFIDReviewPage() {
 
               const candidateState = candidateByMovement[r.id] ?? emptyCandidateState();
               const candidateLocations = candidateState.data?.locations ?? [];
+
+              const selectedDestinationId = r.to_location_id ?? null;
+
+              const selectedDestinationIsValid =
+                selectedDestinationId !== null &&
+                candidateLocations.some((loc) => loc.id === selectedDestinationId);
+              const selectedDestination =
+                selectedDestinationId !== null
+                  ? candidateLocations.find((loc) => loc.id === selectedDestinationId) ?? null
+                  : null;
+
+              const selectedDestinationLabel = selectedDestination
+                ? destinationOptionLabel(
+                    selectedDestination,
+                    candidateState.data?.device_group_code
+                  )
+                : "";
+
+              const destinationSearchText =
+                destinationSearchById[r.id] ?? selectedDestinationLabel;
+
+              const destinationFilter = normalizeSearchText(destinationSearchText);
+
+              const filteredDestinationLocations =
+                destinationFilter.length === 0
+                  ? candidateLocations
+                  : candidateLocations.filter((loc) =>
+                      normalizeSearchText(
+                        destinationOptionLabel(loc, candidateState.data?.device_group_code)
+                      ).includes(destinationFilter)
+                    );
               const destinationDisabled =
                 candidateState.loading ||
                 candidateState.settingDestinationId !== null ||
                 movementTypeUpdatingId === r.id ||
                 candidateLocations.length === 0;
 
-              const logicalName = noteField(r.notes, "logical_name");
-              const aisleCode = noteField(r.notes, "aisle_code");
+              const canConfirmMovement =
+                selectedDestinationIsValid &&
+                !candidateState.loading &&
+                candidateState.settingDestinationId === null &&
+                movementTypeUpdatingId !== r.id;
+
+              const showAisle = rowMovementCode === "GT" || rowMovementCode === "GR";
+              const aisleCode =
+                candidateState.data?.aisle_code ||
+                noteField(r.notes, "aisle_code") ||
+                (r.detected_aisle_id != null ? `AISLE ${r.detected_aisle_id}` : "");
 
               return (
                 <div
@@ -1074,10 +1306,10 @@ export default function RFIDReviewPage() {
                         {r.item_key || "No Part ID"}
                       </span>
                     </div>
-
                     <div className="mt-1 text-sm text-zinc-500">
                       {fmtDate(r.created_at)}
                     </div>
+
                   </div>
 
                   <div className="mt-2 grid gap-3">
@@ -1088,7 +1320,7 @@ export default function RFIDReviewPage() {
                             Movement Type
                           </div>
 
-                          <div className="mt-1 flex h-10 items-center">
+                          <div className="mt-4 flex h-10 items-center">
                             <select
                               value={rowMovementCode}
                               disabled={movementTypeUpdatingId === r.id}
@@ -1116,36 +1348,134 @@ export default function RFIDReviewPage() {
                           </div>
                         </div>
 
-                        <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                      <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                        {showAisle && (
+                          <div className="mb-2 flex items-center justify-between gap-2">
+                            <span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                              Aisle
+                            </span>
+
+                            <span className="rounded-full bg-white px-2 py-0.5 text-xs font-semibold text-zinc-800 ring-1 ring-zinc-200">
+                              {aisleCode || "—"}
+                            </span>
+                          </div>
+                        )}
+
+                        <div className={showAisle ? "border-t border-zinc-200 pt-2" : ""}>
                           <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
                             Destination
                           </div>
 
-                          <div className="mt-1 flex h-10 items-center">
-                            <select
-                              value={r.to_location_id != null ? String(r.to_location_id) : ""}
+                          <div className="relative mt-4">
+                            <input
+                              type="text"
+                              value={destinationSearchText}
                               disabled={destinationDisabled}
-                              onChange={(e) => {
-                                void handleDestinationSelect(r, e.target.value);
-                              }}
-                              className="h-10 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 disabled:bg-zinc-100 disabled:text-zinc-400"
-                            >
-                              <option value="">
-                                {candidateState.loading
+                              placeholder={
+                                candidateState.loading
                                   ? "Loading destinations…"
                                   : candidateLocations.length === 0
                                     ? "No valid destinations"
-                                    : "Select destination…"}
-                              </option>
+                                    : "Search destination…"
+                              }
+                              onFocus={() => {
+                                setDestinationOpenRowId(r.id);
+                              }}
+                              onChange={(e) => {
+                                setDestinationSearchById((prev) => ({
+                                  ...prev,
+                                  [r.id]: e.target.value,
+                                }));
 
-                              {candidateLocations.map((loc) => (
-                                <option key={loc.id} value={loc.id}>
-                                  {destinationOptionLabel(loc)}
-                                </option>
-                              ))}
-                            </select>
+                                setDestinationOpenRowId(r.id);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === "Escape") {
+                                  setDestinationOpenRowId(null);
+                                }
+
+                                if (
+                                  e.key === "Enter" &&
+                                  !destinationDisabled &&
+                                  filteredDestinationLocations.length > 0
+                                ) {
+                                  const firstLocation = filteredDestinationLocations[0];
+                                  const firstLabel = destinationOptionLabel(
+                                    firstLocation,
+                                    candidateState.data?.device_group_code
+                                  );
+
+                                  setDestinationSearchById((prev) => ({
+                                    ...prev,
+                                    [r.id]: firstLabel,
+                                  }));
+
+                                  setDestinationOpenRowId(null);
+
+                                  void handleDestinationSelect(r, String(firstLocation.id));
+                                }
+                              }}
+                              onBlur={() => {
+                                window.setTimeout(() => {
+                                  setDestinationOpenRowId((current) =>
+                                    current === r.id ? null : current
+                                  );
+                                }, 150);
+                              }}
+                              className="h-10 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 disabled:bg-zinc-100 disabled:text-zinc-400"
+                            />
+
+                            {destinationOpenRowId === r.id && !destinationDisabled && (
+                              <div className="absolute left-0 right-0 z-50 mt-1 max-h-56 overflow-auto rounded-lg border border-zinc-200 bg-white shadow-lg">
+                                {candidateState.loading ? (
+                                  <div className="px-3 py-2 text-sm text-zinc-500">
+                                    Loading destinations…
+                                  </div>
+                                ) : filteredDestinationLocations.length === 0 ? (
+                                  <div className="px-3 py-2 text-sm text-zinc-500">
+                                    No matching destinations
+                                  </div>
+                                ) : (
+                                  filteredDestinationLocations.map((loc) => {
+                                    const label = destinationOptionLabel(
+                                      loc,
+                                      candidateState.data?.device_group_code
+                                    );
+
+                                    return (
+                                      <button
+                                        key={loc.id}
+                                        type="button"
+                                        onMouseDown={(e) => {
+                                          e.preventDefault();
+
+                                          setDestinationSearchById((prev) => ({
+                                            ...prev,
+                                            [r.id]: label,
+                                          }));
+
+                                          setDestinationOpenRowId(null);
+
+                                          void handleDestinationSelect(r, String(loc.id));
+                                        }}
+                                        className="flex w-full items-center px-3 py-2 text-left text-sm text-zinc-900 hover:bg-zinc-50"
+                                      >
+                                        {label}
+                                      </button>
+                                    );
+                                  })
+                                )}
+                              </div>
+                            )}
+
+                            {selectedDestinationId !== null && !selectedDestinationIsValid && (
+                              <p className="mt-1 text-xs font-medium text-red-600">
+                                Current destination is no longer valid for this movement.
+                              </p>
+                            )}
                           </div>
                         </div>
+                      </div>
 
                         <div
                           title="Actions"
@@ -1176,16 +1506,24 @@ export default function RFIDReviewPage() {
                           </button>
 
                           {r.to_location_id != null && (
-                            <button
-                              type="button"
-                              onClick={() => confirmMovement(r)}
-                              disabled={confirmingMovementIds.includes(r.id)}
-                              title="Confirm movement"
-                              className="flex h-9 w-9 items-center justify-center rounded-lg border border-green-600 bg-green-600 text-white hover:bg-green-700 disabled:opacity-60"
-                            >
-                              <CheckCircle2 className="h-4 w-4" />
-                              <span className="sr-only">Confirm movement</span>
-                            </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (canConfirmMovement) {
+                                void confirmMovement(r);
+                              }
+                            }}
+                            disabled={!canConfirmMovement || confirmingMovementIds.includes(r.id)}
+                            title={
+                              canConfirmMovement
+                                ? "Confirm movement"
+                                : "Select a valid destination before confirming"
+                            }
+                            className="flex h-9 w-9 items-center justify-center rounded-lg border border-green-600 bg-green-600 text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            <CheckCircle2 className="h-4 w-4" />
+                            <span className="sr-only">Confirm movement</span>
+                          </button>
                           )}
 
                           <button
@@ -1214,27 +1552,88 @@ export default function RFIDReviewPage() {
                             Quantity
                           </div>
 
-                          <div className="mt-1 flex h-10 items-center gap-2">
-                            <input
-                              type="number"
-                              min="1"
-                              step="1"
-                              value={currentQtyValue(r, editingQty)}
-                              onChange={(e) =>
-                                setEditingQty((prev) => ({
-                                  ...prev,
-                                  [r.id]: e.target.value,
-                                }))
-                              }
-                              className="h-10 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500"
-                            />
+                          <div className="mt-4 flex h-10 items-center gap-2">
+                            <div className="flex h-10 flex-1 overflow-hidden rounded-lg border border-zinc-300 bg-white">
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                pattern="[0-9]*"
+                                value={currentQtyValue(r, editingQty)}
+                                onChange={(e) => {
+                                  const cleanValue = e.target.value.replace(/[^\d]/g, "");
+
+                                  setEditingQty((prev) => ({
+                                    ...prev,
+                                    [r.id]: cleanValue,
+                                  }));
+                                }}
+                                onBlur={() => {
+                                  setEditingQty((prev) => {
+                                    const rawValue = prev[r.id] ?? currentQtyValue(r, editingQty);
+                                    const qty = Number.parseInt(rawValue, 10);
+
+                                    return {
+                                      ...prev,
+                                      [r.id]: Number.isFinite(qty) && qty > 0 ? String(qty) : "1",
+                                    };
+                                  });
+                                }}
+                                className="h-full min-w-0 flex-1 border-0 bg-white px-3 text-sm font-semibold text-zinc-900 outline-none"
+                              />
+
+                              <div className="flex w- flex-col border-l border-zinc-300">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const current = Number.parseInt(
+                                      editingQty[r.id] ?? currentQtyValue(r, editingQty),
+                                      10
+                                    );
+
+                                    setEditingQty((prev) => ({
+                                      ...prev,
+                                      [r.id]: String(
+                                        Number.isFinite(current) && current > 0 ? current + 1 : 2
+                                      ),
+                                    }));
+                                  }}
+                                  className="flex h-5 items-center justify-center text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800"
+                                  title="Increase quantity"
+                                >
+                                  <ChevronUp className="h-3.5 w-3.5" />
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const current = Number.parseInt(
+                                      editingQty[r.id] ?? currentQtyValue(r, editingQty),
+                                      10
+                                    );
+
+                                    setEditingQty((prev) => ({
+                                      ...prev,
+                                      [r.id]: String(
+                                        Math.max(1, Number.isFinite(current) ? current - 1 : 1)
+                                      ),
+                                    }));
+                                  }}
+                                  className="flex h-5 items-center justify-center border-t border-zinc-300 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800"
+                                  title="Decrease quantity"
+                                >
+                                  <ChevronDown className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            </div>
 
                             <button
                               type="button"
                               onClick={() => saveMovementQuantity(r)}
-                              className="h-10 rounded-lg border border-zinc-300 bg-white px-4 text-sm font-medium text-zinc-900 hover:bg-zinc-50"
+                              title="Save quantity"
+                              className="flex h-10 w-10 items-center justify-center rounded-lg border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50"
                             >
-                              Save
+                              <Save className="h-4 w-4" />
+                              <span className="sr-only">Save quantity</span>
                             </button>
                           </div>
                         </div>
