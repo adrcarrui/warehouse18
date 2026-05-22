@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy import or_, select, text
+from sqlalchemy import or_, select, text, Integer, cast
 from datetime import datetime, timezone
 
 from warehouse18.infrastructure.db import get_db
@@ -14,10 +14,12 @@ from warehouse18.domain.models import (
     Aisle,
     DeviceAlias,
     DeviceGroup,
+    AisleDeviceGroup
 )
 from warehouse18.presentation.api.schemas import (
     MovementCreateIn,
     MovementOut,
+    MovementQuantityUpdateIn,
     MovementConfirmIn,
     MovementRejectIn,
     MovementLocationsUpdateIn,
@@ -26,6 +28,18 @@ from warehouse18.presentation.api.schemas import (
     MovementSetDestinationIn,
     MovementTypeUpdateIn,
     MovementDescriptionUpdateIn,
+    ConfirmSerializedAssetIn,
+    ConfirmSerializedAssetOut,
+    ConfirmBulkMovementIn,
+    ConfirmBulkMovementOut,
+)
+from warehouse18.application.movements.confirm_serialized_asset import (
+    ConfirmSerializedAssetError,
+    confirm_serialized_asset_movement,
+)
+from warehouse18.application.movements.confirm_bulk_movement import (
+    ConfirmBulkMovementError,
+    confirm_bulk_movement,
 )
 from warehouse18.presentation.api.paging import paginate
 from warehouse18.presentation.api.pagination_headers import set_pagination_headers
@@ -198,6 +212,41 @@ def get_detected_aisle_or_409(db: Session, mv: Movement) -> Aisle:
 
     return aisle
 
+def is_device_group_allowed_in_aisle(
+    db: Session,
+    *,
+    aisle_id: int,
+    device_group_id: int,
+) -> bool:
+    return (
+        db.query(AisleDeviceGroup)
+        .filter(AisleDeviceGroup.aisle_id == aisle_id)
+        .filter(AisleDeviceGroup.device_group_id == device_group_id)
+        .filter(AisleDeviceGroup.is_active.is_(True))
+        .first()
+        is not None
+    )
+
+
+def get_allowed_device_group_codes_for_aisle(
+    db: Session,
+    *,
+    aisle_id: int,
+) -> list[str]:
+    rows = (
+        db.query(DeviceGroup.code)
+        .join(
+            AisleDeviceGroup,
+            AisleDeviceGroup.device_group_id == DeviceGroup.id,
+        )
+        .filter(AisleDeviceGroup.aisle_id == aisle_id)
+        .filter(AisleDeviceGroup.is_active.is_(True))
+        .filter(DeviceGroup.is_active.is_(True))
+        .order_by(AisleDeviceGroup.is_primary.desc(), DeviceGroup.code.asc())
+        .all()
+    )
+
+    return [str(row[0]) for row in rows]
 
 def validate_destination_for_movement(
     db: Session,
@@ -216,7 +265,7 @@ def validate_destination_for_movement(
             )
         return
 
-    if movement_code in {"GR", "GT"}:
+    if movement_code in {"GR", "GT", "GI"}:
         if not movement.item_key:
             raise HTTPException(
                 status_code=409,
@@ -232,6 +281,25 @@ def validate_destination_for_movement(
                 detail="Good Receipt/Transfer destination must be inside the warehouse",
             )
 
+        if not is_device_group_allowed_in_aisle(
+            db,
+            aisle_id=aisle.id,
+            device_group_id=device_group.id,
+        ):
+            allowed_codes = get_allowed_device_group_codes_for_aisle(
+                db,
+                aisle_id=aisle.id,
+            )
+
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Wrong aisle: item group '{device_group.code}' is not allowed "
+                    f"in aisle '{aisle.code}'. Allowed groups: "
+                    f"{', '.join(allowed_codes) if allowed_codes else 'none'}"
+                ),
+            )
+
         if location.aisle_id != aisle.id:
             raise HTTPException(
                 status_code=409,
@@ -241,10 +309,11 @@ def validate_destination_for_movement(
         if location.device_group_id != device_group.id:
             raise HTTPException(
                 status_code=409,
-                detail="Location does not belong to the movement device group",
+                detail="Location does not belong to the detected aisle",
             )
 
         return
+
 
     raise HTTPException(
         status_code=409,
@@ -399,78 +468,180 @@ def list_movements(
     )
 
 
-@router.get("/{movement_id}/candidate-locations", response_model=CandidateLocationsOut)
-def candidate_locations_for_movement(
+def normalize_item_prefix(item_key: str | None) -> str:
+    if not item_key:
+        return ""
+
+    return item_key.split("-", 1)[0].strip().upper()
+
+
+def resolve_location_context(item_key: str | None) -> tuple[str, list[str], str]:
+    """
+    Devuelve:
+    - item_prefix: prefijo real del item, por ejemplo 295
+    - allowed_device_group_codes: grupos válidos para comprobar aisle_device_groups
+    - location_prefix: prefijo real de las localizaciones en tabla locations
+
+    Ejemplos:
+    295-0197   -> item_prefix=295,  groups=[295, C295],   location_prefix=C295
+    C295-0197  -> item_prefix=C295, groups=[295, C295],   location_prefix=C295
+    235-15922  -> item_prefix=235,  groups=[235, CN235],  location_prefix=CN235
+    CN235-15922-> item_prefix=CN235,groups=[235, CN235],  location_prefix=CN235
+    """
+    item_prefix = normalize_item_prefix(item_key)
+
+    if item_prefix in {"295", "C295"}:
+        return item_prefix, ["295", "C295"], "C295"
+
+    if item_prefix in {"235", "CN235"}:
+        return item_prefix, ["235", "CN235"], "CN235"
+
+    return item_prefix, [item_prefix], item_prefix
+
+
+def aisle_allows_device_group(
+    db: Session,
+    *,
+    aisle_id: int,
+    device_group_codes: list[str],
+) -> DeviceGroup | None:
+    return (
+        db.query(DeviceGroup)
+        .join(
+            AisleDeviceGroup,
+            AisleDeviceGroup.device_group_id == DeviceGroup.id,
+        )
+        .filter(AisleDeviceGroup.aisle_id == aisle_id)
+        .filter(AisleDeviceGroup.is_active.is_(True))
+        .filter(DeviceGroup.code.in_(device_group_codes))
+        .order_by(DeviceGroup.code.asc())
+        .first()
+    )
+
+
+@router.get(
+    "/{movement_id}/candidate-locations",
+    response_model=CandidateLocationsOut,
+)
+def get_candidate_locations(
     movement_id: int,
     db: Session = Depends(get_db),
-):
-    mv = db.query(Movement).filter(Movement.id == movement_id).first()
+) -> CandidateLocationsOut:
+    mv = (
+        db.query(Movement)
+        .filter(Movement.id == movement_id)
+        .first()
+    )
 
-    if not mv:
-        raise HTTPException(status_code=409, detail="Movement not found")
+    if mv is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Movement {movement_id} not found",
+        )
+
+    movement_type = (
+        db.query(MovementType)
+        .filter(MovementType.id == mv.movement_type_id)
+        .first()
+    )
+
+    if movement_type is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Movement type not found",
+        )
+
+    movement_code = (movement_type.code or "").strip().upper()
+
+    if movement_code not in {"GR","GT", "GI"}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Unsupported movement type: {movement_code}",
+        )
 
     if not mv.item_key:
         raise HTTPException(
             status_code=409,
             detail="Movement has no item_key",
         )
-
-    mt = get_movement_type_or_409(db, mv.movement_type_id)
-    movement_code = movement_type_code_of(mt)
-
-    prefix, device_group = resolve_device_group_from_item_key(db, mv.item_key)
-
+    # GOOD ISSUE:
+    # Para GI mostramos todas las localizaciones activas.
+    # No depende de detected_aisle_id ni de device_group.
     if movement_code == "GI":
-        aisle_code = ""
-
-        if mv.detected_aisle_id is not None:
-            aisle = db.query(Aisle).filter(Aisle.id == mv.detected_aisle_id).first()
-            aisle_code = aisle.code if aisle else ""
-
         locations = (
             db.query(Location)
             .filter(Location.is_active.is_(True))
-            .filter(Location.is_warehouse_location.is_(False))
-            .order_by(Location.name.asc(), Location.code.asc())
-            .all()
-        )
-
-        return CandidateLocationsOut(
-            item_key=mv.item_key,
-            item_prefix=prefix,
-            aisle_code=aisle_code,
-            device_group_code=device_group.code,
-            locations=locations,
-        )
-
-    if movement_code in {"GR", "GT"}:
-        aisle = get_detected_aisle_or_409(db, mv)
-
-        locations = (
-            db.query(Location)
-            .filter(Location.is_active.is_(True))
-            .filter(Location.is_warehouse_location.is_(True))
-            .filter(Location.aisle_id == aisle.id)
-            .filter(Location.device_group_id == device_group.id)
             .order_by(
-                Location.rack_code.asc(),
-                Location.shelf_code.asc(),
                 Location.name.asc(),
+                Location.code.asc(),
             )
             .all()
         )
 
         return CandidateLocationsOut(
             item_key=mv.item_key,
-            item_prefix=prefix,
-            aisle_code=aisle.code,
-            device_group_code=device_group.code,
+            item_prefix=normalize_item_prefix(mv.item_key),
+            aisle_code=None,
+            device_group_code=None,
             locations=locations,
         )
 
-    raise HTTPException(
-        status_code=409,
-        detail=f"Unsupported movement type: {movement_code}",
+    if mv.detected_aisle_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Movement has no detected aisle",
+        )
+
+    aisle = (
+        db.query(Aisle)
+        .filter(Aisle.id == mv.detected_aisle_id)
+        .first()
+    )
+
+    if aisle is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Detected aisle not found",
+        )
+
+    item_prefix, device_group_codes, location_prefix = resolve_location_context(
+        mv.item_key
+    )
+
+    device_group = aisle_allows_device_group(
+        db,
+        aisle_id=aisle.id,
+        device_group_codes=device_group_codes,
+    )
+
+    if device_group is None:
+        return CandidateLocationsOut(
+            item_key=mv.item_key,
+            item_prefix=item_prefix,
+            aisle_code=aisle.code,
+            device_group_code=location_prefix,
+            locations=[],
+        )
+
+    locations = (
+        db.query(Location)
+        .filter(Location.aisle_id == aisle.id)
+        .filter(Location.is_active.is_(True))
+        .filter(Location.code.ilike(f"{location_prefix} %"))
+        .order_by(
+            cast(Location.rack_code, Integer).asc(),
+            Location.shelf_code.asc(),
+            Location.name.asc(),
+        )
+        .all()
+    )
+
+    return CandidateLocationsOut(
+        item_key=mv.item_key,
+        item_prefix=item_prefix,
+        aisle_code=aisle.code,
+        device_group_code=location_prefix,
+        locations=locations,
     )
 
 
@@ -804,3 +975,335 @@ def update_movement_locations(
     db.refresh(mv)
 
     return mv
+
+@router.patch("/{movement_id}/quantity", response_model=MovementOut)
+def update_movement_quantity(
+    movement_id: int,
+    body: MovementQuantityUpdateIn,
+    db: Session = Depends(get_db),
+):
+    mv = db.query(Movement).filter(Movement.id == movement_id).first()
+
+    if not mv:
+        raise HTTPException(status_code=409, detail="Movement not found")
+
+    qty = body.quantity
+
+    if qty != qty.to_integral_value():
+        raise HTTPException(
+            status_code=409,
+            detail="Quantity must be an integer",
+        )
+
+    if qty <= 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Quantity must be greater than zero",
+        )
+
+    mv.quantity = qty
+
+    try:
+        db.commit()
+        db.refresh(mv)
+        return mv
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(e.orig))
+    
+@router.post(
+    "/{movement_id}/confirm-serialized-asset",
+    response_model=ConfirmSerializedAssetOut,
+)
+def confirm_serialized_asset_endpoint(
+    movement_id: int,
+    payload: ConfirmSerializedAssetIn,
+    db: Session = Depends(get_db),
+):
+    mv = db.query(Movement).filter(Movement.id == movement_id).first()
+    if not mv:
+        raise HTTPException(status_code=409, detail="Movement not found")
+
+    if mv.review_status == REVIEW_STATUS_REJECTED:
+        raise HTTPException(status_code=409, detail="Movement already rejected")
+
+    if payload.reviewed_by_user_id is not None:
+        reviewer = db.query(User).filter(User.id == payload.reviewed_by_user_id).first()
+        if not reviewer:
+            raise HTTPException(status_code=409, detail="Reviewer user not found")
+
+    movement_type_name = _movement_type_name(db, mv.movement_type_id)
+    if movement_type_name is None:
+        raise HTTPException(status_code=409, detail="movement_type not found")
+
+    mt = get_movement_type_or_409(db, mv.movement_type_id)
+    movement_code = movement_type_code_of(mt)
+
+    if movement_code in {"GI", "GR", "GT"} and mv.to_location_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Destination location is required before confirming this movement",
+        )
+
+    if mv.to_location_id is not None:
+        location = db.query(Location).filter(Location.id == mv.to_location_id).first()
+        if not location:
+            raise HTTPException(status_code=409, detail="Destination location not found")
+
+        validate_destination_for_movement(
+            db,
+            movement=mv,
+            location=location,
+        )
+
+    try:
+        result = confirm_serialized_asset_movement(
+            db,
+            movement_id=movement_id,
+            asset_code=payload.asset_code,
+            item_code=payload.item_code,
+            create_enrichment=payload.create_enrichment,
+            enqueue_sync=payload.enqueue_sync,
+        )
+
+        reason = _compute_report_reason_for_confirmation(mv, movement_type_name)
+
+        mv.review_status = REVIEW_STATUS_CONFIRMED
+        mv.reviewed_at = datetime.now(timezone.utc)
+        mv.reviewed_by_user_id = payload.reviewed_by_user_id
+        mv.review_note = payload.review_note
+
+        mv.needs_report = reason is not None
+        mv.report_reason = reason
+        mv.mysim_sync_status = MYSIM_SYNC_STATUS_QUEUED
+
+        db.add(mv)
+        db.flush()
+
+        existing_outbox = db.execute(
+            text(
+                """
+                SELECT id
+                FROM integration_outbox
+                WHERE direction = 'outbound'
+                  AND target_system = 'mysim'
+                  AND entity_type = 'movement'
+                  AND entity_id = :movement_id
+                  AND action = 'sync'
+                  AND status IN ('pending', 'processing', 'error')
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ),
+            {"movement_id": mv.id},
+        ).first()
+
+        if existing_outbox is None:
+            db.execute(
+                text(
+                    """
+                    INSERT INTO integration_outbox (
+                        direction,
+                        target_system,
+                        entity_type,
+                        entity_id,
+                        action,
+                        payload_json,
+                        status,
+                        retries,
+                        created_at
+                    )
+                    VALUES (
+                        'outbound',
+                        'mysim',
+                        'movement',
+                        :movement_id,
+                        'sync',
+                        CAST(:payload_json AS jsonb),
+                        'pending',
+                        0,
+                        now()
+                    )
+                    """
+                ),
+                {
+                    "movement_id": mv.id,
+                    "payload_json": "{}",
+                },
+            )
+
+        db.commit()
+
+        close_pending_and_set_cooldown_for_review(
+            movement_id=mv.id,
+            source="confirm_serialized_asset",
+        )
+
+        return ConfirmSerializedAssetOut(
+            status="ok",
+            movement_id=result.movement_id,
+            movement_type_code=result.movement_type_code,
+            item_id=result.item_id,
+            item_code=result.item_code,
+            asset_id=result.asset_id,
+            asset_code=result.asset_code,
+            message="Serialized asset movement confirmed",
+        )
+
+    except ConfirmSerializedAssetError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Serialized asset confirmation failed: {exc}",
+        ) from exc
+
+    except ConfirmSerializedAssetError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Serialized asset confirmation failed: {exc}",
+        ) from exc
+    
+@router.post(
+    "/{movement_id}/confirm-bulk",
+    response_model=ConfirmBulkMovementOut,
+)
+def confirm_bulk_movement_endpoint(
+    movement_id: int,
+    payload: ConfirmBulkMovementIn,
+    db: Session = Depends(get_db),
+):
+    mv = db.query(Movement).filter(Movement.id == movement_id).first()
+    if not mv:
+        raise HTTPException(status_code=409, detail="Movement not found")
+
+    if mv.review_status == REVIEW_STATUS_REJECTED:
+        raise HTTPException(status_code=409, detail="Movement already rejected")
+
+    if payload.reviewed_by_user_id is not None:
+        reviewer = db.query(User).filter(User.id == payload.reviewed_by_user_id).first()
+        if not reviewer:
+            raise HTTPException(status_code=409, detail="Reviewer user not found")
+
+    try:
+        result = confirm_bulk_movement(
+            db,
+            movement_id=movement_id,
+            container_code=payload.container_code,
+            item_code=payload.item_code,
+            enqueue_sync=payload.enqueue_sync,
+        )
+
+        movement_type_name = _movement_type_name(db, mv.movement_type_id)
+        reason = _compute_report_reason_for_confirmation(mv, movement_type_name)
+
+        mv.review_status = REVIEW_STATUS_CONFIRMED
+        mv.reviewed_at = datetime.now(timezone.utc)
+        mv.reviewed_by_user_id = payload.reviewed_by_user_id
+        mv.review_note = payload.review_note
+
+        mv.needs_report = reason is not None
+        mv.report_reason = reason
+        mv.mysim_sync_status = MYSIM_SYNC_STATUS_QUEUED
+
+        db.add(mv)
+        db.flush()
+
+        existing_outbox = db.execute(
+            text(
+                """
+                SELECT id
+                FROM integration_outbox
+                WHERE direction = 'outbound'
+                  AND target_system = 'mysim'
+                  AND entity_type = 'movement'
+                  AND entity_id = :movement_id
+                  AND action = 'sync'
+                  AND status IN ('pending', 'processing', 'error')
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ),
+            {"movement_id": mv.id},
+        ).first()
+
+        if existing_outbox is None:
+            db.execute(
+                text(
+                    """
+                    INSERT INTO integration_outbox (
+                        direction,
+                        target_system,
+                        entity_type,
+                        entity_id,
+                        action,
+                        payload_json,
+                        status,
+                        retries,
+                        created_at
+                    )
+                    VALUES (
+                        'outbound',
+                        'mysim',
+                        'movement',
+                        :movement_id,
+                        'sync',
+                        CAST(:payload_json AS jsonb),
+                        'pending',
+                        0,
+                        now()
+                    )
+                    """
+                ),
+                {
+                    "movement_id": mv.id,
+                    "payload_json": "{}",
+                },
+            )
+
+        db.commit()
+
+        close_pending_and_set_cooldown_for_review(
+            movement_id=mv.id,
+            source="confirm_bulk",
+        )
+
+        return ConfirmBulkMovementOut(
+            status="ok",
+            movement_id=result.movement_id,
+            movement_type_code=result.movement_type_code,
+            item_id=result.item_id,
+            item_code=result.item_code,
+            container_id=result.container_id,
+            container_code=result.container_code,
+            quantity=result.quantity,
+            message="Bulk movement confirmed",
+        )
+
+    except ConfirmBulkMovementError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Bulk confirmation failed: {exc}",
+        ) from exc

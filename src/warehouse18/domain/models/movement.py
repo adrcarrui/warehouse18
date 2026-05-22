@@ -50,8 +50,13 @@ class Movement(Base):
     nullable=True,
         )
 
-    detected_aisle = relationship("Aisle")
+    detected_asset_code = Column(Text, nullable=True)
 
+    detected_tracking_mode = Column(Text, nullable=True)
+    detected_tid_hex = Column(Text, nullable=True)
+
+    detected_aisle = relationship("Aisle")
+  
     @property
     def user_name(self) -> str | None:
         return self.user.username if self.user else None

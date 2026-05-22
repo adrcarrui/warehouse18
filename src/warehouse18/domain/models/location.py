@@ -36,5 +36,12 @@ class Location(Base):
         backref="children",
     )
 
-    aisle = relationship("Aisle")
-    device_group = relationship("DeviceGroup")
+    aisle = relationship(
+            "Aisle",
+            back_populates="locations",
+        )
+
+    device_group = relationship(
+            "DeviceGroup",
+            back_populates="locations",
+        )

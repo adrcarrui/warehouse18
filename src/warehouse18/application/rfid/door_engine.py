@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from sqlalchemy.orm import Session
-
+from warehouse18.domain.models import Aisle, DeviceAlias, DeviceGroup, AisleDeviceGroup
 from warehouse18.application.rfid.epc96 import EPCSchema, load_epc_schema, parse_epc96
 from warehouse18.application.rfid.event_log_service import log_rfid_event
 from warehouse18.application.rfid.movement_service import (
@@ -231,8 +231,195 @@ def _is_entrance(route: RouteConfig) -> bool:
 
 
 def _is_aisle(route: RouteConfig) -> bool:
-    return route.aisle_id.startswith("AISLE_")
+    return _route_storage_aisle_code(route) is not None
 
+def _normalize_storage_aisle_code(value: str | None) -> str | None:
+    if not value:
+        return None
+
+    text_value = str(value).strip().upper()
+    compact = (
+        text_value
+        .replace("_", "")
+        .replace("-", "")
+        .replace(" ", "")
+    )
+
+    if compact in {"AISLE1", "W18AISLE1"}:
+        return "AISLE1"
+
+    if compact in {"AISLE2", "W18AISLE2"}:
+        return "AISLE2"
+
+    return None
+
+
+def _route_storage_aisle_code(route: RouteConfig) -> str | None:
+    """
+    Devuelve AISLE1/AISLE2 si la ruta corresponde a un pasillo real
+    de almacenamiento.
+
+    AISLE0 / ENTRANCE no debe considerarse pasillo de destino.
+    """
+    for value in (
+        route.aisle_id,
+        route.location_id,
+        route.zone_id,
+        route.logical_name,
+    ):
+        aisle_code = _normalize_storage_aisle_code(value)
+        if aisle_code:
+            return aisle_code
+
+    return None
+
+
+def _get_active_aisle_by_code(db: Session, aisle_code: str) -> Aisle | None:
+    return (
+        db.query(Aisle)
+        .filter(Aisle.code == aisle_code)
+        .filter(Aisle.is_active.is_(True))
+        .first()
+    )
+
+
+def _device_group_codes_for_item_key(db: Session, item_key: str | None) -> list[str]:
+    if not item_key:
+        return []
+
+    prefix = item_key.split("-", 1)[0].strip().upper()
+
+    if not prefix:
+        return []
+
+    codes = {prefix}
+
+    row = (
+        db.query(DeviceAlias, DeviceGroup)
+        .join(DeviceGroup, DeviceGroup.id == DeviceAlias.device_group_id)
+        .filter(DeviceAlias.alias_code == prefix)
+        .filter(DeviceAlias.is_active.is_(True))
+        .filter(DeviceGroup.is_active.is_(True))
+        .first()
+    )
+
+    if row:
+        _, device_group = row
+        codes.add(str(device_group.code).strip().upper())
+
+    # Refuerzo explícito para tus equivalencias actuales
+    if prefix in {"295", "C295"}:
+        codes.update({"295", "C295"})
+
+    if prefix in {"235", "CN235"}:
+        codes.update({"235", "CN235"})
+
+    return sorted(codes)
+
+
+def _aisle_allows_item_key(
+    db: Session,
+    *,
+    aisle_id: int,
+    item_key: str | None,
+) -> bool:
+    device_group_codes = _device_group_codes_for_item_key(db, item_key)
+
+    if not device_group_codes:
+        return False
+
+    return (
+        db.query(AisleDeviceGroup)
+        .join(DeviceGroup, DeviceGroup.id == AisleDeviceGroup.device_group_id)
+        .filter(AisleDeviceGroup.aisle_id == aisle_id)
+        .filter(AisleDeviceGroup.is_active.is_(True))
+        .filter(DeviceGroup.is_active.is_(True))
+        .filter(DeviceGroup.code.in_(device_group_codes))
+        .first()
+        is not None
+    )
+
+def _set_gi_ready_for_origin_selection_from_route(
+    db: Session,
+    *,
+    movement,
+    route: RouteConfig,
+    mysim_user_id: int | None,
+):
+    aisle_code = _route_storage_aisle_code(route)
+
+    if aisle_code:
+        aisle = _get_active_aisle_by_code(db, aisle_code)
+        if aisle is not None:
+            movement.detected_aisle_id = aisle.id
+
+    if mysim_user_id is not None:
+        movement = attach_user_to_movement_if_missing(
+            db,
+            movement=movement,
+            mysim_user_id=mysim_user_id,
+        )
+
+    # GI: el origen real lo elige el usuario en el desplegable.
+    # No usamos la localización técnica del pasillo.
+    movement.from_location_id = None
+    movement.to_location_id = None
+    movement.rfid_status = "ready_for_location"
+
+    db.add(movement)
+    db.commit()
+    db.refresh(movement)
+
+    return movement, aisle_code
+
+def _set_ready_for_location_from_route(
+    db: Session,
+    *,
+    movement,
+    route: RouteConfig,
+    mysim_user_id: int | None,
+):
+    aisle_code = _route_storage_aisle_code(route)
+
+    if not aisle_code:
+        movement.rfid_status = "waiting_storage_aisle"
+        db.add(movement)
+        db.commit()
+        db.refresh(movement)
+        return movement, None, False
+
+    aisle = _get_active_aisle_by_code(db, aisle_code)
+
+    if aisle is None:
+        movement.rfid_status = "wrong_aisle"
+        movement.to_location_id = None
+        db.add(movement)
+        db.commit()
+        db.refresh(movement)
+        return movement, aisle_code, False
+
+    if mysim_user_id is not None:
+        movement = attach_user_to_movement_if_missing(
+            db,
+            movement=movement,
+            mysim_user_id=mysim_user_id,
+        )
+
+    allowed = _aisle_allows_item_key(
+        db,
+        aisle_id=aisle.id,
+        item_key=movement.item_key,
+    )
+
+    movement.detected_aisle_id = aisle.id
+    movement.to_location_id = None
+    movement.rfid_status = "ready_for_location" if allowed else "wrong_aisle"
+
+    db.add(movement)
+    db.commit()
+    db.refresh(movement)
+
+    return movement, aisle_code, allowed
 
 def _try_attach_recent_user_to_latest_pending_movement_for_door(
     *,
@@ -712,7 +899,10 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
 
     # Primera lectura en pasillo -> GI preventivo
     if pending is None and _is_aisle(route):
-        from_location_id_local = resolve_local_location_id_by_mysim_code(db, route.location_id)
+        technical_from_location_id_local = resolve_local_location_id_by_mysim_code(
+            db,
+            route.location_id,
+        )
 
         movement = create_preventive_movement(
             db,
@@ -724,8 +914,18 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
             current_route=route,
             local_user_id=local_user.id if local_user else None,
             mysim_user_id=recent_mysim_user_id,
-            from_location_id_local=from_location_id_local,
+
+            # Importante:
+            # No queremos guardar w18-aisle1 / w18-aisle2 como origen real.
+            from_location_id_local=None,
             to_location_id_local=None,
+        )
+
+        movement, storage_aisle_code = _set_gi_ready_for_origin_selection_from_route(
+            db,
+            movement=movement,
+            route=route,
+            mysim_user_id=recent_mysim_user_id,
         )
 
         pending = PendingMovement(
@@ -735,9 +935,13 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
             expires_at=now_ts + PREVENTIVE_ENRICH_WINDOW_S,
             door_id=route.door_id,
             first_route=route,
-            from_location_id_local=from_location_id_local,
+
+            # Esto solo sirve internamente para saber desde qué zona técnica empezó.
+            # No es el from_location_id real del movimiento.
+            from_location_id_local=technical_from_location_id_local,
+
             last_route=route,
-            last_location_id_local=from_location_id_local,
+            last_location_id_local=technical_from_location_id_local,
             receipt_destination_completed=False,
         )
         _pending_movement_by_epc[epc] = pending
@@ -762,7 +966,9 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
                 "review_status": movement.review_status,
                 "user_id": movement.user_id,
                 "mysim_user_id": movement.mysim_user_id,
-                "from_location_id_local": from_location_id_local,
+                "from_location_id_local": technical_from_location_id_local,
+                "detected_aisle_id": movement.detected_aisle_id,
+                "detected_aisle_code": storage_aisle_code,
             },
         )
 
@@ -782,6 +988,10 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
             "movement_code": "GI",
             "review_status": movement.review_status,
             "rfid_status": movement.rfid_status,
+            "detected_aisle_id": movement.detected_aisle_id,
+            "detected_aisle_code": storage_aisle_code,
+            "from_location_id": movement.from_location_id,
+            "to_location_id": movement.to_location_id,
             "ref_key": f"{route.door_id}:{epc}",
         }
 
@@ -832,79 +1042,25 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
             }
 
         if _is_aisle(route):
-            to_location_id_local = resolve_local_location_id_by_mysim_code(db, route.location_id)
-            pending.last_location_id_local = to_location_id_local
+            _refresh_pending_window(pending, now_ts=now_ts)
+            pending.last_route = route
+            pending.last_location_id_local = None
 
-            # Si todavía no tenía destino, lo completamos
-            if not pending.receipt_destination_completed:
-                movement = complete_receipt_destination(
-                    db,
-                    movement=movement,
-                    to_location_id_local=to_location_id_local,
-                    mysim_user_id=recent_mysim_user_id,
-                )
-                pending.receipt_destination_completed = True
-
-                log_rfid_event(
-                    db,
-                    event_type="movement_updated",
-                    reason="preventive_gr_completed_with_destination",
-                    epc=epc,
-                    reader_id=reader_id,
-                    antenna=event.antenna,
-                    door_id=route.door_id,
-                    zone_id=route.zone_id,
-                    zone_role=route.zone_role,
-                    movement_code="GR",
-                    payload_json={
-                        "movement_id": movement.id,
-                        "item_key": movement.item_key,
-                        "route": f"{pending.first_route.aisle_id}->{route.aisle_id}",
-                        "to_location_id_local": to_location_id_local,
-                        "last_seen_location_id_local": pending.last_location_id_local,
-                        "last_seen_aisle": route.aisle_id,
-                        "expires_at": pending.expires_at,
-                        "rfid_status": movement.rfid_status,
-                        "review_status": movement.review_status,
-                        "user_id": movement.user_id,
-                        "mysim_user_id": movement.mysim_user_id,
-                    },
-                )
-
-                return {
-                    "status": "ok",
-                    "reason": "preventive_gr_completed",
-                    "epc": epc,
-                    "antenna": event.antenna,
-                    "reader_id": reader_id,
-                    "logical_name": route.logical_name,
-                    "location_id": route.location_id,
-                    "zone": route.zone_id,
-                    "zone_role": route.zone_role,
-                    "route_mode": "door_engine",
-                    "door_id": route.door_id,
-                    "movement_id": movement.id,
-                    "movement_code": "GR",
-                    "review_status": movement.review_status,
-                    "rfid_status": movement.rfid_status,
-                    "last_seen_location_id_local": pending.last_location_id_local,
-                    "last_seen_aisle": route.aisle_id,
-                    "receipt_destination_completed": True,
-                    "ref_key": f"{route.door_id}:{epc}",
-                }
-
-            # Si ya tenía destino, actualizamos la localización al último pasillo visto
-            movement = complete_receipt_destination(
+            movement, storage_aisle_code, allowed = _set_ready_for_location_from_route(
                 db,
                 movement=movement,
-                to_location_id_local=to_location_id_local,
+                route=route,
                 mysim_user_id=recent_mysim_user_id,
             )
 
             log_rfid_event(
                 db,
                 event_type="movement_updated",
-                reason="pending_gr_updated_last_seen_aisle",
+                reason=(
+                    "preventive_gr_ready_for_location"
+                    if allowed
+                    else "preventive_gr_wrong_aisle"
+                ),
                 epc=epc,
                 reader_id=reader_id,
                 antenna=event.antenna,
@@ -914,20 +1070,27 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
                 movement_code="GR",
                 payload_json={
                     "movement_id": movement.id,
-                    "to_location_id_local": movement.to_location_id,
-                    "last_seen_location_id_local": pending.last_location_id_local,
-                    "last_seen_aisle": route.aisle_id,
-                    "expires_at": pending.expires_at,
-                    "review_status": movement.review_status,
+                    "item_key": movement.item_key,
+                    "route_aisle_id": route.aisle_id,
+                    "storage_aisle_code": storage_aisle_code,
+                    "detected_aisle_id": movement.detected_aisle_id,
+                    "to_location_id": movement.to_location_id,
                     "rfid_status": movement.rfid_status,
+                    "review_status": movement.review_status,
                     "user_id": movement.user_id,
                     "mysim_user_id": movement.mysim_user_id,
+                    "allowed": allowed,
+                    "expires_at": pending.expires_at,
                 },
             )
 
             return {
                 "status": "ok",
-                "reason": "pending_gr_updated",
+                "reason": (
+                    "preventive_gr_ready_for_location"
+                    if allowed
+                    else "preventive_gr_wrong_aisle"
+                ),
                 "epc": epc,
                 "antenna": event.antenna,
                 "reader_id": reader_id,
@@ -941,9 +1104,11 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
                 "movement_code": "GR",
                 "review_status": movement.review_status,
                 "rfid_status": movement.rfid_status,
-                "last_seen_location_id_local": pending.last_location_id_local,
-                "last_seen_aisle": route.aisle_id,
-                "receipt_destination_completed": True,
+                "detected_aisle_id": movement.detected_aisle_id,
+                "detected_aisle_code": storage_aisle_code,
+                "to_location_id": movement.to_location_id,
+                "allowed": allowed,
+                "receipt_destination_completed": False,
                 "ref_key": f"{route.door_id}:{epc}",
             }
 
@@ -979,14 +1144,25 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
                 mysim_user_id=recent_mysim_user_id,
             )
 
+            movement, storage_aisle_code, allowed = _set_ready_for_location_from_route(
+                db,
+                movement=movement,
+                route=route,
+                mysim_user_id=recent_mysim_user_id,
+            )
+
             pending.movement_code = "GT"
             pending.last_route = route
-            pending.last_location_id_local = to_location_id_local
+            pending.last_location_id_local = None
 
             log_rfid_event(
                 db,
                 event_type="movement_updated",
-                reason="preventive_gi_mutated_to_gt",
+                reason=(
+                    "preventive_gi_mutated_to_gt_ready_for_location"
+                    if allowed
+                    else "preventive_gi_mutated_to_gt_wrong_aisle"
+                ),
                 epc=epc,
                 reader_id=reader_id,
                 antenna=event.antenna,
@@ -999,20 +1175,26 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
                     "item_key": movement.item_key,
                     "route": f"{pending.first_route.aisle_id}->{route.aisle_id}",
                     "from_location_id_local": pending.from_location_id_local,
-                    "to_location_id_local": to_location_id_local,
-                    "last_seen_location_id_local": pending.last_location_id_local,
+                    "storage_aisle_code": storage_aisle_code,
+                    "detected_aisle_id": movement.detected_aisle_id,
+                    "to_location_id": movement.to_location_id,
                     "last_seen_aisle": route.aisle_id,
                     "expires_at": pending.expires_at,
                     "rfid_status": movement.rfid_status,
                     "review_status": movement.review_status,
                     "user_id": movement.user_id,
                     "mysim_user_id": movement.mysim_user_id,
+                    "allowed": allowed,
                 },
             )
 
             return {
                 "status": "ok",
-                "reason": "preventive_gi_mutated_to_gt",
+                "reason": (
+                    "preventive_gi_mutated_to_gt_ready_for_location"
+                    if allowed
+                    else "preventive_gi_mutated_to_gt_wrong_aisle"
+                ),
                 "epc": epc,
                 "antenna": event.antenna,
                 "reader_id": reader_id,
@@ -1026,8 +1208,10 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
                 "movement_code": "GT",
                 "review_status": movement.review_status,
                 "rfid_status": movement.rfid_status,
-                "last_seen_location_id_local": pending.last_location_id_local,
-                "last_seen_aisle": route.aisle_id,
+                "detected_aisle_id": movement.detected_aisle_id,
+                "detected_aisle_code": storage_aisle_code,
+                "to_location_id": movement.to_location_id,
+                "allowed": allowed,
                 "ref_key": f"{route.door_id}:{epc}",
             }
 
@@ -1052,21 +1236,24 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
         _refresh_pending_window(pending, now_ts=now_ts)
 
         if _is_aisle(route):
-            last_location_id_local = resolve_local_location_id_by_mysim_code(db, route.location_id)
             pending.last_route = route
-            pending.last_location_id_local = last_location_id_local
+            pending.last_location_id_local = None
 
-            movement = update_transfer_destination(
+            movement, storage_aisle_code, allowed = _set_ready_for_location_from_route(
                 db,
                 movement=movement,
-                to_location_id_local=last_location_id_local,
+                route=route,
                 mysim_user_id=recent_mysim_user_id,
             )
 
             log_rfid_event(
                 db,
                 event_type="movement_updated",
-                reason="pending_gt_updated_last_seen_aisle",
+                reason=(
+                    "pending_gt_ready_for_location"
+                    if allowed
+                    else "pending_gt_wrong_aisle"
+                ),
                 epc=epc,
                 reader_id=reader_id,
                 antenna=event.antenna,
@@ -1076,20 +1263,27 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
                 movement_code="GT",
                 payload_json={
                     "movement_id": movement.id,
-                    "to_location_id_local": movement.to_location_id,
-                    "last_seen_location_id_local": pending.last_location_id_local,
-                    "last_seen_aisle": route.aisle_id,
+                    "item_key": movement.item_key,
+                    "route_aisle_id": route.aisle_id,
+                    "storage_aisle_code": storage_aisle_code,
+                    "detected_aisle_id": movement.detected_aisle_id,
+                    "to_location_id": movement.to_location_id,
                     "expires_at": pending.expires_at,
                     "review_status": movement.review_status,
                     "rfid_status": movement.rfid_status,
                     "user_id": movement.user_id,
                     "mysim_user_id": movement.mysim_user_id,
+                    "allowed": allowed,
                 },
             )
 
             return {
                 "status": "ok",
-                "reason": "pending_gt_updated",
+                "reason": (
+                    "pending_gt_ready_for_location"
+                    if allowed
+                    else "pending_gt_wrong_aisle"
+                ),
                 "epc": epc,
                 "antenna": event.antenna,
                 "reader_id": reader_id,
@@ -1103,8 +1297,10 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
                 "movement_code": "GT",
                 "review_status": movement.review_status,
                 "rfid_status": movement.rfid_status,
-                "last_seen_location_id_local": pending.last_location_id_local,
-                "last_seen_aisle": route.aisle_id,
+                "detected_aisle_id": movement.detected_aisle_id,
+                "detected_aisle_code": storage_aisle_code,
+                "to_location_id": movement.to_location_id,
+                "allowed": allowed,
                 "ref_key": f"{route.door_id}:{epc}",
             }
 
