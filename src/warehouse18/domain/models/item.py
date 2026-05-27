@@ -23,3 +23,7 @@ class Item(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     item_code = Column(Text, nullable=True, unique=True)
+
+    current_location_id = Column(BigInteger, nullable=True)
+    last_movement_id = Column(BigInteger, nullable=True)
+    last_seen_at = Column(DateTime(timezone=True), nullable=True)

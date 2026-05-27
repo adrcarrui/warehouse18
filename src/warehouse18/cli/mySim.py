@@ -431,8 +431,6 @@ def parts_last_movement(
             print(_json(e.payload))
         raise typer.Exit(code=1)
 
-
-@parts_app.command("upload-movement")
 @parts_app.command("upload-movement")
 def parts_upload_movement(
     part_db_id: int | None = typer.Option(None, "--part-db-id", help="ID interno (db id) del part."),
@@ -536,6 +534,61 @@ def parts_upload_movement(
     else:
         rprint("[green]OK[/green] movimiento creado")
 
+@movements_app.command("update")
+def movements_update(
+    movement_id: str | None = typer.Option(None, "--movement-id", "-m"),
+    movement_db_id: int | None = typer.Option(None, "--id"),
+
+    done_by: int | None = typer.Option(None, "--done-by"),
+    source_location: int | None = typer.Option(None, "--source-location"),
+    destination_location: int | None = typer.Option(None, "--destination-location"),
+    quantity: int | None = typer.Option(None, "--qty"),
+    description: str | None = typer.Option(None, "--desc"),
+
+    dry_run: bool = typer.Option(False, "--dry-run"),
+):
+    api = _bootstrap()
+
+    changes: dict[str, Any] = {}
+
+    if done_by is not None:
+        changes["doneBy"] = done_by
+
+    if source_location is not None:
+        changes["sourceLocation"] = source_location
+
+    if destination_location is not None:
+        changes["destinationLocation"] = destination_location
+
+    if quantity is not None:
+        changes["quantity"] = quantity
+
+    if description is not None:
+        changes["movementDescription"] = description
+
+    if not changes:
+        raise typer.BadParameter(
+            "No has indicado ningún campo a modificar."
+        )
+
+    if movement_db_id is not None:
+        current = api.get_movement_by_id(movement_db_id)
+    else:
+        current = api.get_movement_by_movement_id(movement_id or "")
+
+    if not current:
+        rprint("[yellow]Movimiento no encontrado en mySim[/yellow]")
+        raise typer.Exit(code=2)
+
+    row = api.build_movement_update_row(current, changes)
+
+    if dry_run:
+        rprint("[yellow]DRY RUN: no se envía nada a mySim[/yellow]")
+        print(_json(row))
+        return
+
+    resp = api.client.set(entity="movement", objects=[row])
+    print(_json(resp))
 
 def main():
     app()

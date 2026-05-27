@@ -37,6 +37,7 @@ type MovementOut = {
   detected_tracking_mode?: "serialized" | "bulk" | "unknown" | null;
   detected_tid_hex?: string | null;
   item_is_serialized?: boolean | null;
+  aisle_code?: string | null;
 };
 
 type MovementTypeOut = {
@@ -254,6 +255,26 @@ function safeMovementCode(code: string): MovementCode {
   return "GR";
 }
 
+async function saveQuantityIfNeeded(row: MovementOut): Promise<void> {
+  const raw = editingQty[row.id];
+
+  // Si no hay edición pendiente, no hacemos nada.
+  if (raw === undefined) {
+    return;
+  }
+
+  const nextQty = normalizeQtyForSave(raw);
+  const currentQty = normalizeQtyForSave(row.quantity ?? 1);
+
+  if (nextQty === currentQty) {
+    return;
+  }
+
+  await apiJson("PATCH", `/api/movements/${row.id}/quantity`, {
+    quantity: nextQty,
+  });
+}
+
 function movementSelectClassName(code: string) {
   const normalized = (code || "").toUpperCase();
 
@@ -431,10 +452,13 @@ const [destinationOpenRowId, setDestinationOpenRowId] = useState<number | null>(
     candidateByMovementRef.current = candidateByMovement;
   }, [candidateByMovement]);
 
+
+  
 function movementSnapshot(rows: MovementOut[]) {
   return rows.map((r) => ({
     id: r.id,
     movement_type_id: r.movement_type_id,
+    item_id: r.item_id ?? null,
     from_location_id: r.from_location_id ?? null,
     to_location_id: r.to_location_id ?? null,
     quantity: r.quantity == null ? null : String(r.quantity),
@@ -450,12 +474,14 @@ function movementSnapshot(rows: MovementOut[]) {
     is_preventive: r.is_preventive ?? false,
     rfid_status: r.rfid_status ?? "",
     detected_aisle_id: r.detected_aisle_id ?? null,
+    aisle_code: r.aisle_code ?? "",
     detected_tracking_mode: r.detected_tracking_mode ?? "",
     detected_tid_hex: r.detected_tid_hex ?? "",
 
     updated_like: [
       r.id,
       r.movement_type_id,
+      r.item_id ?? null,
       r.from_location_id ?? null,
       r.to_location_id ?? null,
       r.quantity == null ? null : String(r.quantity),
@@ -471,6 +497,7 @@ function movementSnapshot(rows: MovementOut[]) {
       r.is_preventive ?? false,
       r.rfid_status ?? "",
       r.detected_aisle_id ?? null,
+      r.aisle_code ?? "",
       r.detected_tracking_mode ?? "",
       r.detected_tid_hex ?? "",
     ].join("|"),
@@ -674,6 +701,11 @@ function movementSnapshot(rows: MovementOut[]) {
   async function setCandidateAsDestination(row: MovementOut, loc: LocationOut) {
     setErr(null);
 
+    const destinationLabel = destinationOptionLabel(
+      loc,
+      candidateByMovementRef.current[row.id]?.data?.device_group_code
+    );
+
     setCandidateByMovement((prev) => ({
       ...prev,
       [row.id]: {
@@ -683,7 +715,37 @@ function movementSnapshot(rows: MovementOut[]) {
       },
     }));
 
+    setLocationMap((prev) => ({
+      ...prev,
+      [loc.id]: loc,
+    }));
+
+    setDestinationSearchById((prev) => ({
+      ...prev,
+      [row.id]: destinationLabel,
+    }));
+
+    // Optimistic update so the button can enable immediately.
+    // The backend refresh below will keep it honest, sadly a thing we need now.
+    setMovementRows((prev) =>
+      prev.map((m) =>
+        m.id === row.id
+          ? {
+              ...m,
+              to_location_id: loc.id,
+            }
+          : m
+      )
+    );
+
     try {
+      console.log("PATCH DESTINATION", {
+        movementId: row.id,
+        locationId: loc.id,
+        locationCode: loc.code,
+        locationName: loc.name,
+      });
+
       const response = await apiJson(
         "PATCH",
         `/api/movements/${row.id}/destination`,
@@ -694,20 +756,60 @@ function movementSnapshot(rows: MovementOut[]) {
 
       const updated = unwrapApiData<MovementOut>(response);
 
-      setLocationMap((prev) => ({
+      setMovementRows((prev) =>
+        prev.map((m) =>
+          m.id === row.id
+            ? {
+                ...m,
+                ...updated,
+                to_location_id: updated.to_location_id ?? loc.id,
+              }
+            : m
+        )
+      );
+
+      setDestinationSearchById((prev) => ({
         ...prev,
-        [loc.id]: loc,
+        [row.id]: destinationLabel,
       }));
 
-      setMovementRows((prev) =>
-        prev.map((m) => (m.id === updated.id ? { ...m, ...updated } : m))
-      );
+      // Force a silent refresh so polling does not later resurrect the stale row.
+      await loadMovements(movementPageRef.current, { silent: true });
     } catch (e: any) {
+      const message = e?.message ?? String(e);
+
+      console.error("PATCH DESTINATION FAILED", {
+        movementId: row.id,
+        locationId: loc.id,
+        locationCode: loc.code,
+        locationName: loc.name,
+        isWarehouseLocation: loc.is_warehouse_location,
+        message,
+      });
+      setErr(message);
+
+      setMovementRows((prev) =>
+        prev.map((m) =>
+          m.id === row.id
+            ? {
+                ...m,
+                to_location_id: row.to_location_id ?? null,
+              }
+            : m
+        )
+      );
+
+      setDestinationSearchById((prev) => {
+        const next = { ...prev };
+        delete next[row.id];
+        return next;
+      });
+
       setCandidateByMovement((prev) => ({
         ...prev,
         [row.id]: {
           ...(prev[row.id] ?? emptyCandidateState()),
-          error: e?.message ?? String(e),
+          error: message,
         },
       }));
     } finally {
@@ -719,31 +821,6 @@ function movementSnapshot(rows: MovementOut[]) {
         },
       }));
     }
-  }
-
-  async function handleDestinationSelect(row: MovementOut, value: string) {
-    if (!value) return;
-
-    const state = candidateByMovementRef.current[row.id];
-    const locationId = Number(value);
-
-    if (!Number.isFinite(locationId)) return;
-
-    const loc = state?.data?.locations.find((x) => x.id === locationId);
-
-    if (!loc) {
-      setCandidateByMovement((prev) => ({
-        ...prev,
-        [row.id]: {
-          ...(prev[row.id] ?? emptyCandidateState()),
-          error: "Selected destination was not found in the candidate list",
-        },
-      }));
-
-      return;
-    }
-
-    await setCandidateAsDestination(row, loc);
   }
 
   async function loadMovements(p: number, options?: { silent?: boolean }) {
@@ -801,29 +878,59 @@ function movementSnapshot(rows: MovementOut[]) {
     for (const item of items) {
       const currentCandidate = candidateByMovementRef.current[item.id];
 
-      const isReadyForLocation =
+    const itemMovementCode = safeMovementCode(
+      movementCodeOf(item.movement_type_id, movementTypeMap)
+    );
+
+    const isGI = itemMovementCode === "GI";
+
+    const isReadyForLocation =
+      isGI ||
+      (
         item.rfid_status === "ready_for_location" &&
-        item.detected_aisle_id != null;
+        item.detected_aisle_id != null &&
+        (itemMovementCode === "GR" || itemMovementCode === "GT")
+      );
 
-      const candidateWasLoadedForDifferentAisle =
-        currentCandidate?.loadedDetectedAisleId !== (item.detected_aisle_id ?? null);
+      if (!isReadyForLocation) {
+        setCandidateByMovement((prev) => ({
+          ...prev,
+          [item.id]: {
+            ...emptyCandidateState(),
+            loadedMovementTypeId: item.movement_type_id,
+            loadedDetectedAisleId: item.detected_aisle_id ?? null,
+            loadedRfidStatus: item.rfid_status ?? null,
+          },
+        }));
 
-      const candidateWasLoadedForDifferentMovementType =
-        currentCandidate?.loadedMovementTypeId !== item.movement_type_id;
+      continue;
+    }
 
-      const candidateWasLoadedForDifferentRfidStatus =
-        currentCandidate?.loadedRfidStatus !== (item.rfid_status ?? null);
+    const candidateWasLoadedForDifferentAisle =
+      currentCandidate?.loadedDetectedAisleId !==
+      (item.detected_aisle_id ?? null);
 
-      const shouldForceCandidateReload =
-        isReadyForLocation &&
-        (
-          !currentCandidate?.data ||
-          currentCandidate.data.locations.length === 0 ||
-          currentCandidate.error ||
-          candidateWasLoadedForDifferentAisle ||
-          candidateWasLoadedForDifferentMovementType ||
-          candidateWasLoadedForDifferentRfidStatus
-        );
+    const candidateWasLoadedForDifferentMovementType =
+      currentCandidate?.loadedMovementTypeId !== item.movement_type_id;
+
+    const candidateWasLoadedForDifferentRfidStatus =
+      currentCandidate?.loadedRfidStatus !== (item.rfid_status ?? null);
+
+    const hasCandidateData = Boolean(currentCandidate?.data);
+
+    const hasEmptyCandidateLocations =
+      Boolean(currentCandidate?.data) &&
+      (currentCandidate?.data?.locations.length ?? 0) === 0;
+
+    const hasCandidateError = Boolean(currentCandidate?.error);
+
+    const shouldForceCandidateReload =
+      !hasCandidateData ||
+      hasEmptyCandidateLocations ||
+      hasCandidateError ||
+      candidateWasLoadedForDifferentAisle ||
+      candidateWasLoadedForDifferentMovementType ||
+      candidateWasLoadedForDifferentRfidStatus;
 
       void loadCandidateLocations(item, shouldForceCandidateReload);
     }
@@ -1011,6 +1118,55 @@ function getMovementItemCode(row: MovementOut): string | null {
   return row.item_key?.trim() || null;
 }
 
+async function saveQuantityIfNeeded(row: MovementOut): Promise<void> {
+  const rawValue = editingQty[row.id];
+
+  // Si el usuario no ha tocado el input, no hacemos nada.
+  if (rawValue === undefined) {
+    return;
+  }
+
+  const textValue = String(rawValue).trim();
+
+  if (!textValue) {
+    throw new Error("Quantity is required");
+  }
+
+  const nextQuantity = Number(textValue);
+
+  if (!Number.isFinite(nextQuantity) || nextQuantity <= 0) {
+    throw new Error("Quantity must be greater than zero");
+  }
+
+  if (!Number.isInteger(nextQuantity)) {
+    throw new Error("Quantity must be an integer");
+  }
+
+  const currentQuantity = Number(row.quantity ?? 1);
+
+  if (nextQuantity === currentQuantity) {
+    return;
+  }
+
+  const updatedMovement = await apiJson<MovementOut>(
+    "PATCH",
+    `/api/movements/${row.id}/quantity`,
+    {
+      quantity: nextQuantity,
+    }
+  );
+
+  setMovementRows((prev) =>
+    prev.map((item) => (item.id === row.id ? updatedMovement : item))
+  );
+
+  setEditingQty((prev) => {
+    const next = { ...prev };
+    delete next[row.id];
+    return next;
+  });
+}
+
 function shouldUseSerializedAssetConfirm(row: MovementOut): boolean {
   return Boolean(getMovementAssetCode(row) && getMovementItemCode(row));
 }
@@ -1047,6 +1203,7 @@ async function confirmMovement(row: MovementOut) {
         enqueue_sync: true,
       });
     } else if (assetCode && itemCode && trackingMode === "bulk") {
+      await saveQuantityIfNeeded(row);
       await apiPost(`/api/movements/${row.id}/confirm-bulk`, {
         container_code: assetCode,
         item_code: itemCode,
@@ -1241,17 +1398,31 @@ async function confirmMovement(row: MovementOut) {
               );
 
               const candidateState = candidateByMovement[r.id] ?? emptyCandidateState();
-              const candidateLocations = candidateState.data?.locations ?? [];
+
+              const canUseCandidateLocations =
+                rowMovementCode === "GI" ||
+                (
+                  r.rfid_status === "ready_for_location" &&
+                  (rowMovementCode === "GT" || rowMovementCode === "GR")
+                );
+
+              const candidateLocations = canUseCandidateLocations
+                ? candidateState.data?.locations ?? []
+                : [];
 
               const selectedDestinationId = r.to_location_id ?? null;
 
-              const selectedDestinationIsValid =
-                selectedDestinationId !== null &&
-                candidateLocations.some((loc) => loc.id === selectedDestinationId);
               const selectedDestination =
                 selectedDestinationId !== null
-                  ? candidateLocations.find((loc) => loc.id === selectedDestinationId) ?? null
+                  ? (
+                      candidateLocations.find((loc) => loc.id === selectedDestinationId) ??
+                      locationMap[selectedDestinationId] ??
+                      null
+                    )
                   : null;
+
+              const selectedDestinationIsValid =
+                selectedDestinationId !== null && selectedDestination !== null;
 
               const selectedDestinationLabel = selectedDestination
                 ? destinationOptionLabel(
@@ -1273,13 +1444,17 @@ async function confirmMovement(row: MovementOut) {
                         destinationOptionLabel(loc, candidateState.data?.device_group_code)
                       ).includes(destinationFilter)
                     );
+
               const destinationDisabled =
                 candidateState.loading ||
                 candidateState.settingDestinationId !== null ||
                 movementTypeUpdatingId === r.id ||
                 candidateLocations.length === 0;
 
+              const hasRequiredLocation = selectedDestinationId !== null;
+
               const canConfirmMovement =
+                hasRequiredLocation &&
                 selectedDestinationIsValid &&
                 !candidateState.loading &&
                 candidateState.settingDestinationId === null &&
@@ -1287,9 +1462,9 @@ async function confirmMovement(row: MovementOut) {
 
               const showAisle = rowMovementCode === "GT" || rowMovementCode === "GR";
               const aisleCode =
-                candidateState.data?.aisle_code ||
-                noteField(r.notes, "aisle_code") ||
-                (r.detected_aisle_id != null ? `AISLE ${r.detected_aisle_id}` : "");
+                r.aisle_code ||
+                (r.detected_aisle_id != null ? `AISLE${r.detected_aisle_id}` : "") ||
+                "";
 
               return (
                 <div
@@ -1367,6 +1542,11 @@ async function confirmMovement(row: MovementOut) {
                           </div>
 
                           <div className="relative mt-4">
+                          {r.rfid_status === "wrong_aisle" && (
+                            <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">
+                              Wrong aisle for this item
+                            </div>
+                          )}
                             <input
                               type="text"
                               value={destinationSearchText}
@@ -1399,20 +1579,13 @@ async function confirmMovement(row: MovementOut) {
                                   !destinationDisabled &&
                                   filteredDestinationLocations.length > 0
                                 ) {
-                                  const firstLocation = filteredDestinationLocations[0];
-                                  const firstLabel = destinationOptionLabel(
-                                    firstLocation,
-                                    candidateState.data?.device_group_code
-                                  );
+                                  e.preventDefault();
 
-                                  setDestinationSearchById((prev) => ({
-                                    ...prev,
-                                    [r.id]: firstLabel,
-                                  }));
+                                  const firstLocation = filteredDestinationLocations[0];
 
                                   setDestinationOpenRowId(null);
 
-                                  void handleDestinationSelect(r, String(firstLocation.id));
+                                  void setCandidateAsDestination(r, firstLocation);
                                 }
                               }}
                               onBlur={() => {
@@ -1449,14 +1622,9 @@ async function confirmMovement(row: MovementOut) {
                                         onMouseDown={(e) => {
                                           e.preventDefault();
 
-                                          setDestinationSearchById((prev) => ({
-                                            ...prev,
-                                            [r.id]: label,
-                                          }));
-
                                           setDestinationOpenRowId(null);
 
-                                          void handleDestinationSelect(r, String(loc.id));
+                                          void setCandidateAsDestination(r, loc);
                                         }}
                                         className="flex w-full items-center px-3 py-2 text-left text-sm text-zinc-900 hover:bg-zinc-50"
                                       >
@@ -1505,7 +1673,7 @@ async function confirmMovement(row: MovementOut) {
                             </span>
                           </button>
 
-                          {r.to_location_id != null && (
+                          {hasRequiredLocation && (
                           <button
                             type="button"
                             onClick={() => {

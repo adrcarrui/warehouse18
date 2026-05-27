@@ -20,6 +20,36 @@ MYSIM_MOVEMENT_TYPE_IDS_BY_LABEL = {
     "Good tracking": 234,  # Good Tracking
 }
 
+MOVEMENT_UPDATE_FIELDS = {
+    "id",
+    "doneBy",
+    "date",
+    "sourceLocation",
+    "destinationLocation",
+    "movementDescription",
+    "quantity",
+    "movementType",
+    "entity",
+    "idCol",
+    "versionInstalled",
+    "course",
+    "installPart",
+    "destUninstalledPart",
+    "unistallPart",
+    "uninstallPart",
+    "parentMovementId",
+    "uninstalledBy",
+    "whyIsItUninstalled",
+    "exchangePart",
+    "loanTo",
+    "orderTransfer",
+    "saleOrder",
+    "repairDossier",
+    "saleOrExchangeOrder",
+    "deliveryNote",
+    "entrega",
+    "transporte",
+}
 
 class MySimAdapter:
     """
@@ -286,4 +316,93 @@ class MySimAdapter:
         # 4) Enviar vía SET
         # -----------------------------------------------------
         print("ROW SENT TO MYSIM /set:", row)
+        return self.client.set(entity="movement", objects=[row])
+    
+    def get_movement_by_movement_id(self, movement_id: str) -> Optional[Dict[str, Any]]:
+            """
+            Busca un movimiento por movementId, ej: M2026-093075.
+            """
+            safe = movement_id.replace("'", "''")
+
+            resp = self.client.get(
+                entity="movement",
+                extra_query=f"t.movementId='{safe}'",
+                limit=1,
+            )
+
+            rows = rows_normalized(resp)
+            return rows[0] if rows else None
+
+    def get_movement_by_id(self, movement_db_id: int | str) -> Optional[Dict[str, Any]]:
+        """
+        Busca un movimiento por ID interno real de mySim, ej: 93075.
+        """
+        resp = self.client.get(
+            entity="movement",
+            id=movement_db_id,
+            limit=1,
+        )
+
+        rows = rows_normalized(resp)
+        return rows[0] if rows else None
+
+    def build_movement_update_row(
+        self,
+        current: Dict[str, Any],
+        changes: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Coge el movimiento actual de mySim, conserva campos editables
+        y aplica cambios encima.
+
+        Importante:
+        - current debe ser la fila de data.data[0], no el JSON completo.
+        - id debe mantenerse con el ID interno de mySim.
+        """
+        if not current.get("id"):
+            raise ValueError("movement_update_requires_mysim_internal_id")
+
+        row = {
+            key: value
+            for key, value in current.items()
+            if key in MOVEMENT_UPDATE_FIELDS
+        }
+
+        for key, value in changes.items():
+            if key not in MOVEMENT_UPDATE_FIELDS:
+                raise ValueError(f"movement_field_not_allowed_for_update:{key}")
+
+            row[key] = value
+
+        return row
+
+    def update_movement_fields(
+        self,
+        *,
+        movement_id: str | None = None,
+        movement_db_id: int | str | None = None,
+        changes: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Actualiza campos de un movimiento existente en mySim.
+
+        Se puede llamar por:
+        - movement_id: M2026-093075
+        - movement_db_id: 93075
+        """
+        if not movement_id and movement_db_id is None:
+            raise ValueError("movement_id_or_movement_db_id_required")
+
+        if movement_db_id is not None:
+            current = self.get_movement_by_id(movement_db_id)
+        else:
+            current = self.get_movement_by_movement_id(movement_id or "")
+
+        if not current:
+            raise ValueError("movement_not_found_in_mysim")
+
+        row = self.build_movement_update_row(current, changes)
+
+        print("ROW SENT TO MYSIM /set UPDATE:", row)
+
         return self.client.set(entity="movement", objects=[row])

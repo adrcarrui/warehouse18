@@ -10,3 +10,4 @@ class InventoryStock(Base):
 
     quantity = Column(Numeric(18, 6), nullable=False, server_default="0")
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    last_movement_id = Column(BigInteger, ForeignKey("movements.id"), nullable=True)

@@ -5,6 +5,9 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from datetime import datetime, timezone
+
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from warehouse18.application.rfid.epc96 import (
@@ -17,10 +20,38 @@ from warehouse18.domain.models.location import Location
 from warehouse18.domain.models.movement import Movement
 from warehouse18.domain.models.movement_type import MovementType as LocalMovementType
 from warehouse18.domain.models.user import User
+from warehouse18.domain.models.item import Item
 from warehouse18.domain.models.aisle import Aisle
 
 log = logging.getLogger("warehouse18.rfid.movement")
 
+
+def get_or_create_item_by_key(db: Session, item_key: str) -> Item:
+    normalized_item_key = item_key.strip().upper()
+
+    item = (
+        db.query(Item)
+        .filter(func.upper(Item.item_code) == normalized_item_key)
+        .first()
+    )
+
+    if item is not None:
+        return item
+
+    item = Item(
+        item_code=normalized_item_key,
+        name=f"Pending mySim sync - {normalized_item_key}",
+        description=None,
+        category=None,
+        uom="unit",
+        is_serialized=True,
+        is_active=True,
+    )
+
+    db.add(item)
+    db.flush()
+
+    return item
 
 # -------------------------------------------------
 # EPC helpers
@@ -73,11 +104,19 @@ def normalize_aisle_code(value: str | None) -> str | None:
     if code in ("ENTRANCE", "ENTRADA"):
         return "AISLE0"
 
+    # AISLE_4_A -> AISLE4
+    # AISLE_4   -> AISLE4
     if code.startswith("AISLE_"):
-        return "AISLE" + code.split("_", 1)[1]
+        parts = code.split("_")
+        if len(parts) >= 2 and parts[1].isdigit():
+            return f"AISLE{parts[1]}"
 
+    # PASILLO_4_A -> AISLE4
+    # PASILLO_4   -> AISLE4
     if code.startswith("PASILLO_"):
-        return "AISLE" + code.split("_", 1)[1]
+        parts = code.split("_")
+        if len(parts) >= 2 and parts[1].isdigit():
+            return f"AISLE{parts[1]}"
 
     return code
 
@@ -93,29 +132,95 @@ def resolve_tracking_mode_from_epc(epc: str, epc_schema_path: str) -> tuple[str,
     return "bulk", None
 
 def resolve_detected_aisle_id(db: Session, current_route) -> int | None:
-    aisle_code = normalize_aisle_code(getattr(current_route, "aisle_code", None))
+    raw_values = [
+        getattr(current_route, "zone_id", None),
+        getattr(current_route, "logical_name", None),
+        getattr(current_route, "aisle_code", None),
+    ]
 
-    if not aisle_code:
+    candidates: list[str] = []
+
+    for raw in raw_values:
+        normalized = normalize_aisle_code(raw)
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+
+    if not candidates:
+        log.warning(
+            "RFID detected aisle could not be resolved | antenna=%s zone=%s logical_name=%s aisle_code=%s",
+            getattr(current_route, "antenna", None),
+            getattr(current_route, "zone_id", None),
+            getattr(current_route, "logical_name", None),
+            getattr(current_route, "aisle_code", None),
+        )
         return None
 
     aisle = (
         db.query(Aisle)
-        .filter(Aisle.code == aisle_code)
+        .filter(func.upper(Aisle.code).in_(candidates))
         .filter(Aisle.is_active.is_(True))
         .first()
     )
 
     if aisle is None:
         log.warning(
-            "RFID detected aisle not found | route_aisle_code=%s normalized_code=%s antenna=%s zone=%s",
-            getattr(current_route, "aisle_code", None),
-            aisle_code,
+            "RFID detected aisle not found | candidates=%s antenna=%s zone=%s logical_name=%s aisle_code=%s",
+            candidates,
             getattr(current_route, "antenna", None),
             getattr(current_route, "zone_id", None),
+            getattr(current_route, "logical_name", None),
+            getattr(current_route, "aisle_code", None),
         )
         return None
 
     return int(aisle.id)
+
+def apply_confirmed_movement_to_item_state(
+    db: Session,
+    *,
+    movement: Movement,
+) -> None:
+    """
+    Actualiza el estado actual del item cuando un movimiento se confirma.
+
+    movements = histórico
+    items.current_location_id = estado actual
+    """
+
+    if movement.item_id is None:
+        if movement.item_key:
+            item = get_or_create_item_by_key(db, movement.item_key)
+            movement.item_id = item.id
+        else:
+            raise ValueError("confirmed_movement_missing_item_id_and_item_key")
+    else:
+        item = db.query(Item).filter(Item.id == movement.item_id).first()
+
+    if item is None:
+        raise ValueError(f"item_not_found_for_movement:{movement.id}")
+
+    movement_type = movement.movement_type
+    movement_code = getattr(movement_type, "code", None)
+
+    if movement_code in {"GR", "GT"}:
+        if movement.to_location_id is None:
+            raise ValueError(
+                f"confirmed_{movement_code}_movement_missing_to_location:{movement.id}"
+            )
+
+        item.current_location_id = movement.to_location_id
+
+    elif movement_code == "GI":
+        item.current_location_id = None
+
+    else:
+        raise ValueError(f"unsupported_movement_type_for_item_state:{movement_code}")
+
+    item.last_movement_id = movement.id
+    item.last_seen_at = datetime.now(timezone.utc)
+
+    db.add(item)
+    db.add(movement)
 
 # -------------------------------------------------
 # Create preventive movement
@@ -156,6 +261,13 @@ def create_preventive_movement(
         else None
     )
 
+    item = get_or_create_item_by_key(db, item_key)
+
+    movement_code = getattr(mt, "code", None)
+
+    if movement_code in {"GI", "GT"} and from_location_id_local is None:
+        from_location_id_local = item.current_location_id
+
     notes = (
         f"RFID preventive movement | epc={detected_asset_code} | "
         f"door_id={current_route.door_id} | "
@@ -169,7 +281,7 @@ def create_preventive_movement(
 
     mv = Movement(
         movement_type_id=mt.id,
-        item_id=None,
+        item_id=item.id,
         quantity=Decimal("1"),
         from_location_id=from_location_id_local,
         to_location_id=to_location_id_local,
@@ -177,7 +289,7 @@ def create_preventive_movement(
         reference_id=None,
         user_id=local_user_id,
         notes=notes,
-        item_key=item_key,
+        item_key=item.item_code,
         mysim_user_id=mysim_user_id,
         review_status="pending",
         mysim_sync_status="pending_review",

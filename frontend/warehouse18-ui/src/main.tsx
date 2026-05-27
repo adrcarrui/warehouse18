@@ -12,6 +12,7 @@ import RFIDReviewPage from "./pages/RFIDReview";
 import ItemLocationPage from "./pages/ItemLocationPage";
 import PistolSendEpcPage from "./pages/PistolSendEpcPage";
 import PistolWsTestPage from "./pages/PistolWsTestPage";
+import AlertsPage from "./pages/Alerts";
 import "./index.css"
 
 
@@ -29,6 +30,7 @@ function Home() {
         <li><Link to="/dashboard">Dashboard</Link></li>
         <li><Link to="/rfid-review">RFIDReview</Link></li>
         <li><Link to="/item-location">Item Location</Link></li>
+        <li><Link to="/alerts">Alerts</Link></li>
       </ul>
     </div>
   );
@@ -50,6 +52,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         <Route path="/item-location" element={<ItemLocationPage/>}/>
         <Route path="/pistol/send-epc" element={<PistolSendEpcPage />} />
         <Route path="/pistol/ws-test" element={<PistolWsTestPage />} />
+        <Route path="/alerts" element={<AlertsPage />} />
       </Routes>
     </BrowserRouter>
   //</React.StrictMode>

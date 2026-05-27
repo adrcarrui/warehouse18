@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from decimal import Decimal
-
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from warehouse18.domain.models import (
@@ -14,6 +14,7 @@ from warehouse18.domain.models import (
     Movement,
     MovementType,
     StockContainer,
+    movement,
 )
 
 
@@ -160,6 +161,14 @@ def _get_location_or_error(
 
     return location
 
+def _touch_stock_row(
+    stock: InventoryStock,
+    *,
+    movement: Movement,
+) -> None:
+    stock.last_movement_id = movement.id
+    stock.updated_at = datetime.now(timezone.utc)
+
 def _get_or_create_stock_row(
     db: Session,
     *,
@@ -273,6 +282,7 @@ def _confirm_gr(
     )
 
     stock.quantity = Decimal(str(stock.quantity)) + quantity
+    _touch_stock_row(stock, movement=movement)
 
     movement.from_location_id = None
     movement.to_location_id = to_location.id
@@ -345,7 +355,8 @@ def _confirm_gi(
     if container.quantity == Decimal("0"):
         container.status = "empty"
 
-    stock.quantity = stock_qty - quantity
+    stock.quantity = Decimal(str(stock.quantity)) - quantity
+    _touch_stock_row(stock, movement=movement)
 
     movement.from_location_id = origin_location_id
     movement.to_location_id = to_location.id
@@ -384,19 +395,40 @@ def _confirm_gt(
             f"Container {container_code} is linked to another item"
         )
 
-    current_qty = Decimal(str(container.quantity))
-
-    if quantity != current_qty:
+    if not container.is_active:
         raise ConfirmBulkMovementError(
-            "Partial container transfer is not implemented yet. "
+            f"Container {container_code} is inactive"
+        )
+
+    current_qty = Decimal(str(container.quantity or 0))
+
+    if quantity <= 0:
+        raise ConfirmBulkMovementError(
+            f"Movement quantity must be greater than zero. Movement quantity={quantity}"
+        )
+
+    if current_qty <= 0:
+        raise ConfirmBulkMovementError(
+            f"Container {container_code} has no available quantity. "
+            f"Container quantity={current_qty}"
+        )
+
+    if quantity > current_qty:
+        raise ConfirmBulkMovementError(
+            f"Movement quantity cannot be greater than container quantity. "
             f"Container quantity={current_qty}, movement quantity={quantity}"
         )
 
-    origin_location_id = container.location_id
+    origin_location_id = movement.from_location_id or container.location_id
+
+    if origin_location_id is None:
+        raise ConfirmBulkMovementError(
+            "GT requires an origin location"
+        )
 
     if origin_location_id == to_location.id:
         raise ConfirmBulkMovementError(
-            f"Container {container_code} is already at destination"
+            f"Origin and destination are the same location"
         )
 
     origin_stock = _get_or_create_stock_row(
@@ -411,7 +443,8 @@ def _confirm_gt(
         location_id=to_location.id,
     )
 
-    origin_stock_qty = Decimal(str(origin_stock.quantity))
+    origin_stock_qty = Decimal(str(origin_stock.quantity or 0))
+    destination_stock_qty = Decimal(str(destination_stock.quantity or 0))
 
     if origin_stock_qty < quantity:
         raise ConfirmBulkMovementError(
@@ -419,11 +452,25 @@ def _confirm_gt(
             f"Available={origin_stock_qty}, requested={quantity}"
         )
 
+    # Stock real:
+    # GT -> resta en origen y suma en destino
     origin_stock.quantity = origin_stock_qty - quantity
-    destination_stock.quantity = Decimal(str(destination_stock.quantity)) + quantity
+    _touch_stock_row(origin_stock, movement=movement)
 
-    container.location_id = to_location.id
-    container.status = "open"
+    destination_stock.quantity = destination_stock_qty + quantity
+    _touch_stock_row(destination_stock, movement=movement)
+
+    # Contenedor:
+    # - Si se mueve todo el contenedor, el contenedor cambia de ubicación.
+    # - Si se mueve solo una parte, el contenedor original se queda en origen
+    #   con la cantidad restante.
+    if quantity == current_qty:
+        container.location_id = to_location.id
+        container.quantity = current_qty
+        container.status = "open"
+    else:
+        container.quantity = current_qty - quantity
+        container.status = "open"
 
     movement.from_location_id = origin_location_id
     movement.to_location_id = to_location.id

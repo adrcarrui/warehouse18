@@ -1,6 +1,7 @@
 import { ReactNode, useEffect, useMemo, useState } from "react";
 import { SystemHealthBadge } from "../ui/SystemHealthBadge";
 import { Link, useLocation } from "react-router-dom";
+import { Outlet } from "react-router-dom";
 import {
   LayoutDashboard,
   Package,
@@ -12,6 +13,7 @@ import {
   ChevronRight,
   Radio,
   Activity,
+  BellRing,
 } from "lucide-react";
 import { cn } from "../lib/cn";
 
@@ -32,6 +34,8 @@ const NAV: NavItem[] = [
   { label: "Item Location", href: "/item-location", icon: MapPin },
   { label: "Pistol Send EPC", href: "/pistol/send-epc", icon: Package },
   { label: "Pistol WS Test", href: "/pistol/ws-test", icon: Package },
+  { label: "Pistol WS Monitor", href: "/pistol/ws-monitor", icon: Package },
+  { label: "Alerts", href: "/alerts", icon: BellRing },
   //{ label: "Settings", href: "/settings", icon: Settings },
 ];
 

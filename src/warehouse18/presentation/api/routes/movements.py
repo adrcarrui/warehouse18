@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
+import logging
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy import or_, select, text, Integer, cast
+from sqlalchemy import or_, select, text, Integer, cast, func
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from warehouse18.infrastructure.db import get_db
 from warehouse18.domain.models import (
@@ -44,7 +46,7 @@ from warehouse18.application.movements.confirm_bulk_movement import (
 from warehouse18.presentation.api.paging import paginate
 from warehouse18.presentation.api.pagination_headers import set_pagination_headers
 from warehouse18.application.rfid.door_engine import close_pending_and_set_cooldown_for_review
-
+log=logging.getLogger(__name__)
 router = APIRouter(prefix="/movements", tags=["movements"])
 
 VALID_REF_TYPES = {"asset", "container"}
@@ -551,7 +553,18 @@ def get_candidate_locations(
             detail="Movement type not found",
         )
 
-    movement_code = (movement_type.code or "").strip().upper()
+    movement_code = (
+    movement_type.code
+    or movement_type.name
+    or ""
+    ).strip().upper()
+
+    if movement_code in {"GOOD RECEIPT", "GOOD_RECEIPT"}:
+        movement_code = "GR"
+    elif movement_code in {"GOOD TRANSFER", "GOOD_TRANSFER"}:
+        movement_code = "GT"
+    elif movement_code in {"GOOD ISSUE", "GOOD_ISSUE"}:
+        movement_code = "GI"
 
     if movement_code not in {"GR","GT", "GI"}:
         raise HTTPException(
@@ -571,11 +584,20 @@ def get_candidate_locations(
         locations = (
             db.query(Location)
             .filter(Location.is_active.is_(True))
+            .filter(Location.is_warehouse_location.is_(False))
             .order_by(
                 Location.name.asc(),
                 Location.code.asc(),
             )
             .all()
+        )
+
+        return CandidateLocationsOut(
+            item_key=mv.item_key,
+            item_prefix=normalize_item_prefix(mv.item_key),
+            aisle_code=None,
+            device_group_code=None,
+            locations=locations,
         )
 
         return CandidateLocationsOut(
@@ -627,7 +649,7 @@ def get_candidate_locations(
         db.query(Location)
         .filter(Location.aisle_id == aisle.id)
         .filter(Location.is_active.is_(True))
-        .filter(Location.code.ilike(f"{location_prefix} %"))
+        .filter(Location.name.ilike(f"{location_prefix} %"))
         .order_by(
             cast(Location.rack_code, Integer).asc(),
             Location.shelf_code.asc(),
@@ -718,11 +740,21 @@ def set_movement_destination(
     if not location:
         raise HTTPException(status_code=409, detail="Location not found or inactive")
 
-    validate_destination_for_movement(
-        db,
-        movement=mv,
-        location=location,
-    )
+    mt = get_movement_type_or_409(db, mv.movement_type_id)
+    movement_code = movement_type_code_of(mt)
+
+    if movement_code == "GI":
+        if location.is_warehouse_location:
+            raise HTTPException(
+                status_code=409,
+                detail="GI destination must be outside the warehouse",
+            )
+    else:
+        validate_destination_for_movement(
+            db,
+            movement=mv,
+            location=location,
+        )
 
     mv.to_location_id = location.id
 
@@ -765,6 +797,385 @@ def get_movement(movement_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=409, detail="Movement not found")
     return mv
 
+def apply_confirmed_serialized_asset_state_direct(
+    db: Session,
+    *,
+    movement: Movement,
+    asset_id: int,
+) -> None:
+    """
+    Actualiza el estado actual del asset físico serializado.
+
+    assets.current_location_id = ubicación actual real de esa unidad física.
+    movements.asset_id = asset físico movido.
+    """
+
+    if movement.to_location_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Destination location is required to update serialized asset state",
+        )
+
+    db.execute(
+        text(
+            """
+            UPDATE assets
+            SET
+                current_location_id = :current_location_id,
+                last_movement_id = :movement_id,
+                last_seen_at = now(),
+                updated_at = now()
+            WHERE id = :asset_id
+            """
+        ),
+        {
+            "asset_id": asset_id,
+            "movement_id": movement.id,
+            "current_location_id": movement.to_location_id,
+        },
+    )
+
+    db.execute(
+        text(
+            """
+            UPDATE movements
+            SET asset_id = :asset_id
+            WHERE id = :movement_id
+            """
+        ),
+        {
+            "asset_id": asset_id,
+            "movement_id": movement.id,
+        },
+    )
+
+    log.warning(
+        "CONFIRM UPDATED SERIALIZED ASSET STATE | movement_id=%s asset_id=%s to_location_id=%s",
+        movement.id,
+        asset_id,
+        movement.to_location_id,
+    )
+
+def movement_quantity_or_409(movement: Movement) -> Decimal:
+    if movement.quantity is None:
+        return Decimal("1")
+
+    quantity = Decimal(str(movement.quantity))
+
+    if quantity <= 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Movement quantity must be greater than zero",
+        )
+
+    return quantity
+
+def apply_confirmed_inventory_stock_state_direct(
+    db: Session,
+    *,
+    movement: Movement,
+    movement_code: str,
+) -> None:
+    """
+    Aplica stock por ubicación para items NO serializados.
+
+    GR -> suma en destino
+    GT -> resta en origen y suma en destino
+    GI -> resta en origen
+
+    Es idempotente usando movements.inventory_applied_at.
+    """
+
+    normalized_code = str(movement_code or "").strip().upper()
+
+    if movement.item_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Movement {movement.id} has no item_id",
+        )
+
+    item = db.query(Item).filter(Item.id == movement.item_id).first()
+    if item is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Item not found for movement {movement.id}",
+        )
+
+    # Los serializados se controlan por assets.current_location_id.
+    # inventory_stock es solo para no serializados.
+    if bool(getattr(item, "is_serialized", False)):
+        log.warning(
+            "INVENTORY STOCK SKIPPED SERIALIZED ITEM | movement_id=%s item_id=%s item_code=%s",
+            movement.id,
+            item.id,
+            item.item_code,
+        )
+        return
+
+    applied_row = db.execute(
+        text(
+            """
+            SELECT inventory_applied_at
+            FROM movements
+            WHERE id = :movement_id
+            FOR UPDATE
+            """
+        ),
+        {"movement_id": movement.id},
+    ).mappings().first()
+
+    if applied_row is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Movement {movement.id} not found while applying inventory",
+        )
+
+    if applied_row["inventory_applied_at"] is not None:
+        log.warning(
+            "INVENTORY STOCK ALREADY APPLIED | movement_id=%s item_id=%s item_code=%s applied_at=%s",
+            movement.id,
+            item.id,
+            item.item_code,
+            applied_row["inventory_applied_at"],
+        )
+        return
+
+    quantity = movement_quantity_or_409(movement)
+
+    def add_stock(location_id: int) -> None:
+        db.execute(
+            text(
+                """
+                INSERT INTO inventory_stock (
+                    item_id,
+                    location_id,
+                    quantity,
+                    last_movement_id,
+                    updated_at
+                )
+                VALUES (
+                    :item_id,
+                    :location_id,
+                    :quantity,
+                    :movement_id,
+                    now()
+                )
+                ON CONFLICT (item_id, location_id)
+                DO UPDATE SET
+                    quantity = inventory_stock.quantity + EXCLUDED.quantity,
+                    last_movement_id = EXCLUDED.last_movement_id,
+                    updated_at = now()
+                """
+            ),
+            {
+                "item_id": item.id,
+                "location_id": location_id,
+                "quantity": quantity,
+                "movement_id": movement.id,
+            },
+        )
+
+    def subtract_stock(location_id: int) -> None:
+        updated = db.execute(
+            text(
+                """
+                UPDATE inventory_stock
+                SET
+                    quantity = quantity - :quantity,
+                    last_movement_id = :movement_id,
+                    updated_at = now()
+                WHERE item_id = :item_id
+                  AND location_id = :location_id
+                  AND quantity >= :quantity
+                RETURNING quantity
+                """
+            ),
+            {
+                "item_id": item.id,
+                "location_id": location_id,
+                "quantity": quantity,
+                "movement_id": movement.id,
+            },
+        ).mappings().first()
+
+        if updated is None:
+            current = db.execute(
+                text(
+                    """
+                    SELECT quantity
+                    FROM inventory_stock
+                    WHERE item_id = :item_id
+                      AND location_id = :location_id
+                    """
+                ),
+                {
+                    "item_id": item.id,
+                    "location_id": location_id,
+                },
+            ).mappings().first()
+
+            current_quantity = current["quantity"] if current else Decimal("0")
+
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Insufficient stock for item {item.item_code} at location {location_id}. "
+                    f"Required {quantity}, available {current_quantity}."
+                ),
+            )
+
+    if normalized_code == "GR":
+        if movement.to_location_id is None:
+            raise HTTPException(
+                status_code=409,
+                detail="GR requires to_location_id to apply inventory stock",
+            )
+
+        add_stock(movement.to_location_id)
+
+    elif normalized_code == "GT":
+        if movement.from_location_id is None:
+            raise HTTPException(
+                status_code=409,
+                detail="GT requires from_location_id to apply inventory stock",
+            )
+
+        if movement.to_location_id is None:
+            raise HTTPException(
+                status_code=409,
+                detail="GT requires to_location_id to apply inventory stock",
+            )
+
+        if movement.from_location_id == movement.to_location_id:
+            raise HTTPException(
+                status_code=409,
+                detail="GT origin and destination cannot be the same location",
+            )
+
+        subtract_stock(movement.from_location_id)
+        add_stock(movement.to_location_id)
+
+    elif normalized_code == "GI":
+        if movement.from_location_id is None:
+            raise HTTPException(
+                status_code=409,
+                detail="GI requires from_location_id to apply inventory stock",
+            )
+
+        subtract_stock(movement.from_location_id)
+
+    else:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Unsupported movement type for inventory stock: {normalized_code}",
+        )
+
+    db.execute(
+        text(
+            """
+            UPDATE movements
+            SET inventory_applied_at = now()
+            WHERE id = :movement_id
+            """
+        ),
+        {"movement_id": movement.id},
+    )
+
+    log.warning(
+        "INVENTORY STOCK APPLIED | movement_id=%s item_id=%s item_code=%s movement_code=%s quantity=%s from_location_id=%s to_location_id=%s",
+        movement.id,
+        item.id,
+        item.item_code,
+        normalized_code,
+        quantity,
+        movement.from_location_id,
+        movement.to_location_id,
+    )
+
+def apply_confirmed_movement_to_item_state_direct(
+    db: Session,
+    *,
+    movement: Movement,
+    movement_code: str,
+) -> None:
+    """
+    Aplica un movimiento confirmado sobre el estado actual del item.
+
+    movements = histórico
+    items.current_location_id = ubicación actual real
+    """
+
+    normalized_code = str(movement_code or "").strip().upper()
+
+    item = None
+
+    if movement.item_id is not None:
+        item = db.query(Item).filter(Item.id == movement.item_id).first()
+
+    if item is None and movement.item_key:
+        normalized_item_key = movement.item_key.strip().upper()
+
+        item = (
+            db.query(Item)
+            .filter(func.upper(Item.item_code) == normalized_item_key)
+            .first()
+        )
+
+        if item is not None:
+            movement.item_id = item.id
+
+    if item is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Item not found for movement {movement.id}",
+        )
+
+    old_current_location_id = item.current_location_id
+
+    if normalized_code in {"GR", "GT"}:
+        if movement.to_location_id is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Destination location is required to update item state",
+            )
+
+        item.current_location_id = movement.to_location_id
+
+    elif normalized_code == "GI":
+        # De momento tu flujo exige destino también para GI.
+        # Si más adelante creas OUT_OF_WAREHOUSE, cambiaremos esta regla aquí.
+        if movement.to_location_id is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Destination location is required to update item state",
+            )
+
+        item.current_location_id = movement.to_location_id
+
+    else:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Unsupported movement type for item state: {normalized_code}",
+        )
+
+    item.last_movement_id = movement.id
+    item.last_seen_at = datetime.now(timezone.utc)
+
+    db.add(item)
+    db.add(movement)
+    db.flush()
+
+    log.warning(
+        "CONFIRM UPDATED ITEM STATE | movement_id=%s item_id=%s item_key=%s movement_code=%s old_current_location_id=%s new_current_location_id=%s to_location_id=%s last_movement_id=%s",
+        movement.id,
+        item.id,
+        item.item_code,
+        normalized_code,
+        old_current_location_id,
+        item.current_location_id,
+        movement.to_location_id,
+        item.last_movement_id,
+    )
 
 @router.post("/{movement_id}/confirm", response_model=MovementOut)
 def confirm_movement(
@@ -776,16 +1187,8 @@ def confirm_movement(
     if not mv:
         raise HTTPException(status_code=409, detail="Movement not found")
 
-    if mv.review_status == REVIEW_STATUS_CONFIRMED:
-        return mv
-
     if mv.review_status == REVIEW_STATUS_REJECTED:
         raise HTTPException(status_code=409, detail="Movement already rejected")
-
-    if body.reviewed_by_user_id is not None:
-        reviewer = db.query(User).filter(User.id == body.reviewed_by_user_id).first()
-        if not reviewer:
-            raise HTTPException(status_code=409, detail="Reviewer user not found")
 
     movement_type_name = _movement_type_name(db, mv.movement_type_id)
     if movement_type_name is None:
@@ -793,6 +1196,30 @@ def confirm_movement(
 
     mt = get_movement_type_or_409(db, mv.movement_type_id)
     movement_code = movement_type_code_of(mt)
+
+    # Si ya estaba confirmado, re-aplicamos el estado del item.
+    # Esto permite reparar movimientos ya confirmados, como el 732.
+    if mv.review_status == REVIEW_STATUS_CONFIRMED:
+        apply_confirmed_movement_to_item_state_direct(
+            db,
+            movement=mv,
+            movement_code=movement_code,
+        )
+
+        db.commit()
+        db.refresh(mv)
+
+        close_pending_and_set_cooldown_for_review(
+            movement_id=mv.id,
+            source="confirm_already_confirmed",
+        )
+
+        return mv
+
+    if body.reviewed_by_user_id is not None:
+        reviewer = db.query(User).filter(User.id == body.reviewed_by_user_id).first()
+        if not reviewer:
+            raise HTTPException(status_code=409, detail="Reviewer user not found")
 
     if movement_code in {"GI", "GR", "GT"} and mv.to_location_id is None:
         raise HTTPException(
@@ -804,6 +1231,7 @@ def confirm_movement(
         location = db.query(Location).filter(Location.id == mv.to_location_id).first()
         if not location:
             raise HTTPException(status_code=409, detail="Destination location not found")
+
 
         validate_destination_for_movement(
             db,
@@ -822,6 +1250,12 @@ def confirm_movement(
     mv.report_reason = reason
 
     mv.mysim_sync_status = MYSIM_SYNC_STATUS_QUEUED
+
+    apply_confirmed_movement_to_item_state_direct(
+        db,
+        movement=mv,
+        movement_code=movement_code,
+    )
 
     db.add(mv)
     db.flush()
@@ -887,7 +1321,6 @@ def confirm_movement(
     )
 
     return mv
-
 
 @router.post("/{movement_id}/reject", response_model=MovementOut)
 def reject_movement(
@@ -1066,6 +1499,12 @@ def confirm_serialized_asset_endpoint(
             enqueue_sync=payload.enqueue_sync,
         )
 
+        db.flush()
+        db.refresh(mv)
+
+        if mv.item_id is None and result.item_id is not None:
+            mv.item_id = result.item_id
+
         reason = _compute_report_reason_for_confirmation(mv, movement_type_name)
 
         mv.review_status = REVIEW_STATUS_CONFIRMED
@@ -1076,6 +1515,22 @@ def confirm_serialized_asset_endpoint(
         mv.needs_report = reason is not None
         mv.report_reason = reason
         mv.mysim_sync_status = MYSIM_SYNC_STATUS_QUEUED
+
+        # 1) Actualiza el estado del asset físico serializado.
+        apply_confirmed_serialized_asset_state_direct(
+            db,
+            movement=mv,
+            asset_id=result.asset_id,
+        )
+
+        # 2) Opcional: mantiene items.current_location_id actualizado.
+        # Para serializados, la fuente real debería ser assets.current_location_id.
+        # Pero lo dejamos para compatibilidad con la UI actual.
+        apply_confirmed_movement_to_item_state_direct(
+            db,
+            movement=mv,
+            movement_code=movement_code,
+        )
 
         db.add(mv)
         db.flush()
@@ -1133,6 +1588,7 @@ def confirm_serialized_asset_endpoint(
             )
 
         db.commit()
+        db.refresh(mv)
 
         close_pending_and_set_cooldown_for_review(
             movement_id=mv.id,
@@ -1150,19 +1606,9 @@ def confirm_serialized_asset_endpoint(
             message="Serialized asset movement confirmed",
         )
 
-    except ConfirmSerializedAssetError as exc:
+    except HTTPException:
         db.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail=str(exc),
-        ) from exc
-
-    except Exception as exc:
-        db.rollback()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Serialized asset confirmation failed: {exc}",
-        ) from exc
+        raise
 
     except ConfirmSerializedAssetError as exc:
         db.rollback()
@@ -1199,6 +1645,30 @@ def confirm_bulk_movement_endpoint(
         if not reviewer:
             raise HTTPException(status_code=409, detail="Reviewer user not found")
 
+    movement_type_name = _movement_type_name(db, mv.movement_type_id)
+    if movement_type_name is None:
+        raise HTTPException(status_code=409, detail="movement_type not found")
+
+    mt = get_movement_type_or_409(db, mv.movement_type_id)
+    movement_code = movement_type_code_of(mt)
+
+    if movement_code in {"GI", "GR", "GT"} and mv.to_location_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Destination location is required before confirming this movement",
+        )
+
+    if mv.to_location_id is not None:
+        location = db.query(Location).filter(Location.id == mv.to_location_id).first()
+        if not location:
+            raise HTTPException(status_code=409, detail="Destination location not found")
+
+        validate_destination_for_movement(
+            db,
+            movement=mv,
+            location=location,
+        )
+
     try:
         result = confirm_bulk_movement(
             db,
@@ -1208,7 +1678,13 @@ def confirm_bulk_movement_endpoint(
             enqueue_sync=payload.enqueue_sync,
         )
 
-        movement_type_name = _movement_type_name(db, mv.movement_type_id)
+        # Por si confirm_bulk_movement ha enlazado item internamente.
+        db.flush()
+        db.refresh(mv)
+
+        if mv.item_id is None and result.item_id is not None:
+            mv.item_id = result.item_id
+
         reason = _compute_report_reason_for_confirmation(mv, movement_type_name)
 
         mv.review_status = REVIEW_STATUS_CONFIRMED
@@ -1219,6 +1695,21 @@ def confirm_bulk_movement_endpoint(
         mv.needs_report = reason is not None
         mv.report_reason = reason
         mv.mysim_sync_status = MYSIM_SYNC_STATUS_QUEUED
+
+        # CLAVE:
+        # Esto actualiza items.current_location_id,
+        # items.last_movement_id y items.last_seen_at.
+        apply_confirmed_movement_to_item_state_direct(
+            db,
+            movement=mv,
+            movement_code=movement_code,
+        )
+
+        #apply_confirmed_inventory_stock_state_direct(
+        #    db,
+        #    movement=mv,
+        #    movement_code=movement_code,
+        #)
 
         db.add(mv)
         db.flush()
@@ -1276,6 +1767,7 @@ def confirm_bulk_movement_endpoint(
             )
 
         db.commit()
+        db.refresh(mv)
 
         close_pending_and_set_cooldown_for_review(
             movement_id=mv.id,
@@ -1293,6 +1785,10 @@ def confirm_bulk_movement_endpoint(
             quantity=result.quantity,
             message="Bulk movement confirmed",
         )
+
+    except HTTPException:
+        db.rollback()
+        raise
 
     except ConfirmBulkMovementError as exc:
         db.rollback()

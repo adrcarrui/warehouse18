@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +19,7 @@ from warehouse18.application.rfid.movement_service import (
     create_preventive_movement,
     finalize_preventive_movement,
     get_movement_by_id,
+    get_or_create_item_by_key,
     mutate_issue_to_transfer,
     resolve_local_location_id_by_mysim_code,
     resolve_local_user_by_mysim_id,
@@ -238,6 +241,7 @@ def _normalize_storage_aisle_code(value: str | None) -> str | None:
         return None
 
     text_value = str(value).strip().upper()
+
     compact = (
         text_value
         .replace("_", "")
@@ -245,34 +249,64 @@ def _normalize_storage_aisle_code(value: str | None) -> str | None:
         .replace(" ", "")
     )
 
-    if compact in {"AISLE1", "W18AISLE1"}:
-        return "AISLE1"
+    if compact in {"ENTRANCE", "ENTRADA", "AISLE0", "W18AISLE0"}:
+        return None
 
-    if compact in {"AISLE2", "W18AISLE2"}:
-        return "AISLE2"
+    # AISLE_1_B, AISLE1, W18_AISLE_2, W18AISLE2
+    match = re.search(r"(?:W18)?[_\s-]*AISLE[_\s-]*(\d+)", text_value)
+    if match:
+        return f"AISLE{int(match.group(1))}"
+
+    # PASILLO_1, PASILLO 2, Pasillo 1 antena 2
+    match = re.search(r"PASILLO[_\s-]*(\d+)", text_value)
+    if match:
+        return f"AISLE{int(match.group(1))}"
 
     return None
-
 
 def _route_storage_aisle_code(route: RouteConfig) -> str | None:
     """
-    Devuelve AISLE1/AISLE2 si la ruta corresponde a un pasillo real
+    Devuelve AISLE{N} si la ruta corresponde a un pasillo real
     de almacenamiento.
 
+    Prioriza zone_id porque representa mejor la antena física detectada.
     AISLE0 / ENTRANCE no debe considerarse pasillo de destino.
     """
+    log.warning(
+        "RFID ROUTE AISLE RAW | antenna=%s aisle_id=%s location_id=%s zone_id=%s logical_name=%s",
+        getattr(route, "antenna", None),
+        getattr(route, "aisle_id", None),
+        getattr(route, "location_id", None),
+        getattr(route, "zone_id", None),
+        getattr(route, "logical_name", None),
+    )
+
     for value in (
-        route.aisle_id,
-        route.location_id,
         route.zone_id,
         route.logical_name,
+        route.location_id,
+        route.aisle_id,
     ):
         aisle_code = _normalize_storage_aisle_code(value)
         if aisle_code:
+            log.warning(
+                "RFID ROUTE AISLE RESOLVED | antenna=%s raw_value=%s resolved=%s",
+                getattr(route, "antenna", None),
+                value,
+                aisle_code,
+            )
             return aisle_code
 
-    return None
+    log.warning(
+        "RFID ROUTE AISLE NOT RESOLVED | antenna=%s zone_id=%s logical_name=%s location_id=%s aisle_id=%s",
+        getattr(route, "antenna", None),
+        getattr(route, "zone_id", None),
+        getattr(route, "logical_name", None),
+        getattr(route, "location_id", None),
+        getattr(route, "aisle_id", None),
+    )
 
+    return None
 
 def _get_active_aisle_by_code(db: Session, aisle_code: str) -> Aisle | None:
     return (
@@ -282,6 +316,38 @@ def _get_active_aisle_by_code(db: Session, aisle_code: str) -> Aisle | None:
         .first()
     )
 
+def _ensure_item_and_origin_from_state(
+    db: Session,
+    *,
+    movement,
+    movement_code: str | None,
+):
+    """
+    Asegura que el movimiento queda enlazado al item local y,
+    para GI/GT, carga el origen real desde items.current_location_id
+    si todavía está vacío.
+    """
+    if not getattr(movement, "item_key", None):
+        return movement
+
+    item = get_or_create_item_by_key(db, movement.item_key)
+
+    changed = False
+
+    if movement.item_id is None:
+        movement.item_id = item.id
+        changed = True
+
+    if movement_code in {"GI", "GT"} and movement.from_location_id is None:
+        movement.from_location_id = item.current_location_id
+        changed = True
+
+    if changed:
+        db.add(movement)
+        db.commit()
+        db.refresh(movement)
+
+    return movement
 
 def _device_group_codes_for_item_key(db: Session, item_key: str | None) -> list[str]:
     if not item_key:
@@ -360,9 +426,14 @@ def _set_gi_ready_for_origin_selection_from_route(
             mysim_user_id=mysim_user_id,
         )
 
-    # GI: el origen real lo elige el usuario en el desplegable.
-    # No usamos la localización técnica del pasillo.
-    movement.from_location_id = None
+    # GI: el origen real debe venir del estado actual del item.
+    # No usamos la localización técnica del pasillo como origen.
+    movement = _ensure_item_and_origin_from_state(
+        db,
+        movement=movement,
+        movement_code="GI",
+    )
+
     movement.to_location_id = None
     movement.rfid_status = "ready_for_location"
 
@@ -1020,6 +1091,12 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
             "zone": route.zone_id,
             "zone_role": route.zone_role,
         }
+    
+    movement = _ensure_item_and_origin_from_state(
+    db,
+    movement=movement,
+    movement_code=pending.movement_code,
+    )
 
     # GR preventivo: se crea en entrada y permanece abierto hasta timeout o confirm/reject
     if pending.movement_code == "GR":
@@ -1121,7 +1198,34 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
             pending.last_route = route
             pending.last_location_id_local = to_location_id_local
 
-            if pending.from_location_id_local == to_location_id_local:
+            first_storage_aisle_code = _route_storage_aisle_code(pending.first_route)
+            current_storage_aisle_code = _route_storage_aisle_code(route)
+
+            log.warning(
+                "RFID GI AISLE COMPARE | movement_id=%s item_key=%s first_storage_aisle=%s current_storage_aisle=%s pending_from_location_id_local=%s current_location_id_local=%s route_location_id=%s route_zone=%s route_logical_name=%s",
+                movement.id,
+                movement.item_key,
+                first_storage_aisle_code,
+                current_storage_aisle_code,
+                pending.from_location_id_local,
+                to_location_id_local,
+                route.location_id,
+                route.zone_id,
+                route.logical_name,
+            )
+
+            if (
+                first_storage_aisle_code is not None
+                and current_storage_aisle_code is not None
+                and first_storage_aisle_code == current_storage_aisle_code
+            ):
+                movement, storage_aisle_code = _set_gi_ready_for_origin_selection_from_route(
+                    db,
+                    movement=movement,
+                    route=route,
+                    mysim_user_id=recent_mysim_user_id,
+                )
+
                 return {
                     "status": "ok",
                     "reason": "preventive_gi_same_aisle",
@@ -1133,10 +1237,11 @@ def process_event(db: Session, event: RFIDEvent) -> dict[str, Any]:
                     "zone_role": route.zone_role,
                     "movement_id": movement.id,
                     "movement_code": "GI",
-                    "last_seen_location_id_local": pending.last_location_id_local,
-                    "last_seen_aisle": route.aisle_id,
+                    "first_storage_aisle": first_storage_aisle_code,
+                    "current_storage_aisle": current_storage_aisle_code,
+                    "detected_aisle_id": movement.detected_aisle_id,
+                    "detected_aisle_code": storage_aisle_code,
                 }
-
             movement = mutate_issue_to_transfer(
                 db,
                 movement=movement,
