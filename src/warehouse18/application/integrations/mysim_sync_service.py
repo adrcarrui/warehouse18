@@ -2,8 +2,7 @@ from __future__ import annotations
 import os
 import os
 
-os.environ["MYSIM_BASE_URL"] = "https://tests.simeng.es/api/v1/pub"
-os.environ["MYSIM_TOKEN"] = "8b77da7fd1c738a3b4befb72dc28e43ac7f5db0e431831571fe9b53aa364fc5e"
+import base64
 import json
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -57,6 +56,74 @@ def _get_mysim_config() -> tuple[str, str, float]:
 
     return base_url, token, timeout
 
+def _get_mysim_part_id_by_part_code(part_code: str) -> int | None:
+    """
+    Convierte partId humano, por ejemplo '400-0774',
+    al ID interno de mySim, por ejemplo 2570.
+    """
+    raw = str(part_code or "").strip()
+
+    if not raw:
+        return None
+
+    if raw.isdigit():
+        return int(raw)
+
+    base_url, token, timeout = _get_mysim_config()
+
+    safe = raw.replace("'", "''")
+    extra_query = f"t.partId='{safe}'"
+    encoded_extra_query = base64.b64encode(
+        extra_query.encode("utf-8")
+    ).decode("ascii")
+
+    url = f"{base_url}/get?entity=parts&extraQuery={encoded_extra_query}&limit=1"
+
+    headers = {
+        "X-AUTH-TOKEN": token,
+        "Accept": "application/json",
+    }
+
+    _log(
+        f"_get_mysim_part_id_by_part_code | part_code={raw!r} "
+        f"extra_query={extra_query!r}"
+    )
+
+    response = requests.post(
+        url,
+        headers=headers,
+        timeout=timeout,
+        allow_redirects=True,
+    )
+
+    content_type = response.headers.get("content-type", "").lower()
+    text_body = response.text[:2000]
+
+    if "application/json" not in content_type:
+        raise RuntimeError(
+            f"mySim parts lookup did not return JSON. "
+            f"status={response.status_code} content_type={content_type} body={text_body}"
+        )
+
+    data = response.json()
+
+    if response.status_code != 200 or data.get("status") not in (200, "200", None):
+        raise RuntimeError(
+            f"mySim parts lookup failed. "
+            f"http_status={response.status_code} json_status={data.get('status')} body={text_body}"
+        )
+
+    rows = (
+        data.get("data", {})
+        .get("data", [])
+    )
+
+    if not rows:
+        return None
+
+    value = rows[0].get("id")
+
+    return int(value) if value is not None else None
 
 def _get_movement_or_raise(db: Session, movement_id: int) -> Movement:
     _log(f"_get_movement_or_raise | movement_id={movement_id}")
@@ -185,13 +252,18 @@ def _resolve_mysim_user_id(
     return int(mysim_id)
 
 
-def _resolve_item_identifier(movement: Movement) -> int | str:
+def _resolve_item_identifier(movement: Movement) -> int:
     """
-    Orden de resolución:
-    1) movement.mysim_item_id si existiera en el modelo
-    2) movement.item_id
-    3) movement.item_key, extrayendo lo que va después del guion
-       Ej: CN235-015992 -> 15992
+    Resuelve el ID interno de mySim para el part del movimiento.
+
+    IMPORTANTE:
+    - movement.item_id es el ID local de Warehouse18.
+    - mySim necesita el ID interno de mySim parts.id.
+    - Por tanto, se debe resolver usando movement.item_key como partId.
+      Ejemplo:
+        movement.item_key = '235-0019'
+        mySim parts.id = XXXX
+        idCol = XXXX
     """
     mysim_item_id = getattr(movement, "mysim_item_id", None)
     item_id = getattr(movement, "item_id", None)
@@ -199,47 +271,49 @@ def _resolve_item_identifier(movement: Movement) -> int | str:
 
     _log(
         f"_resolve_item_identifier | movement_id={movement.id} "
-        f"mysim_item_id={mysim_item_id} item_id={item_id} item_key={item_key!r} "
+        f"mysim_item_id={mysim_item_id} local_item_id={item_id} "
+        f"item_key={item_key!r} "
         f"reference_type={getattr(movement, 'reference_type', None)} "
         f"reference_id={getattr(movement, 'reference_id', None)}"
     )
 
+    # Si algún día guardas explícitamente el ID interno de mySim,
+    # entonces sí puedes usarlo directamente.
     if mysim_item_id is not None:
-        _log(f"_resolve_item_identifier | using mysim_item_id={mysim_item_id}")
+        _log(
+            f"_resolve_item_identifier | using explicit mysim_item_id={mysim_item_id}"
+        )
         return int(mysim_item_id)
 
-    if item_id is not None:
-        _log(f"_resolve_item_identifier | using item_id={item_id}")
-        return int(item_id)
-
-    if item_key:
-        raw = str(item_key).strip()
-
-        if "-" not in raw:
-            raise RuntimeError(
-                f"item_key has no '-' separator for movement_id={movement.id}: {raw}"
-            )
-
-        suffix = raw.split("-", 1)[1].strip()
-
-        if not suffix:
-            raise RuntimeError(
-                f"item_key suffix is empty for movement_id={movement.id}: {raw}"
-            )
-
-        if not suffix.isdigit():
-            raise RuntimeError(
-                f"item_key suffix is not numeric for movement_id={movement.id}: {raw}"
-            )
-
-        resolved = int(suffix)
-        _log(
-            f"_resolve_item_identifier | parsed from item_key raw={raw} "
-            f"suffix={suffix} resolved={resolved}"
+    # Para sincronizar con mySim, NO uses movement.item_id.
+    # movement.item_id es local, no sirve como idCol de mySim.
+    if not item_key:
+        raise RuntimeError(
+            f"movement_id={movement.id} has no item_key; "
+            f"cannot resolve mySim part id. local_item_id={item_id}"
         )
-        return resolved
 
-    raise RuntimeError(f"Unable to resolve item identifier for movement_id={movement.id}")
+    part_code = str(item_key).strip()
+
+    if not part_code:
+        raise RuntimeError(
+            f"movement_id={movement.id} has empty item_key; "
+            f"cannot resolve mySim part id. local_item_id={item_id}"
+        )
+
+    mysim_part_id = _get_mysim_part_id_by_part_code(part_code)
+
+    if mysim_part_id is None:
+        raise RuntimeError(
+            f"Part not found in mySim for movement_id={movement.id}: {part_code}"
+        )
+
+    _log(
+        f"_resolve_item_identifier | resolved mySim part id "
+        f"part_code={part_code!r} mysim_part_id={mysim_part_id}"
+    )
+
+    return int(mysim_part_id)
 
 
 def _normalize_quantity(raw: Any) -> int | float:
@@ -277,10 +351,22 @@ def _build_description(movement: Movement) -> str:
     return description
 
 
-def _build_mysim_payload(db: Session, movement: Movement) -> list[dict[str, Any]]:
+def _build_mysim_payload(
+    db: Session,
+    movement: Movement,
+    outbox_payload: dict | None = None,
+) -> list[dict[str, Any]]:
+    outbox_payload = outbox_payload or {}
+    device_flow = outbox_payload.get("device_install_uninstall") or {}
+
     _log(
         "_build_mysim_payload | start movement="
         + json.dumps(_movement_debug_dict(movement), ensure_ascii=False, default=str)
+    )
+
+    _log(
+        "_build_mysim_payload | outbox_payload="
+        + json.dumps(outbox_payload, ensure_ascii=False, default=str)
     )
 
     movement_type_name = _get_movement_type_name(db, movement.movement_type_id)
@@ -316,6 +402,55 @@ def _build_mysim_payload(db: Session, movement: Movement) -> list[dict[str, Any]
     if done_by is not None:
         row["doneBy"] = done_by
 
+    # ---------------------------------------------------------
+    # Device install/uninstall
+    # ---------------------------------------------------------
+    is_device_destination = destination_location == 1
+
+    if is_device_destination:
+        # Confirmado en mySim:
+        # idCol = part instalado
+        # installPart = part instalado
+        row["installPart"] = int(item_identifier)
+
+    if device_flow:
+        unistall_part = device_flow.get("unistall_part")
+        dest_uninstalled_part = device_flow.get("dest_uninstalled_part")
+        uninstalled_by = device_flow.get("uninstalled_by")
+        why_is_it_uninstalled = device_flow.get("why_is_it_uninstalled")
+
+        missing = []
+
+        if not unistall_part:
+            missing.append("unistall_part")
+
+        if dest_uninstalled_part is None:
+            missing.append("dest_uninstalled_part")
+
+        if uninstalled_by is None:
+            missing.append("uninstalled_by")
+
+        if not why_is_it_uninstalled:
+            missing.append("why_is_it_uninstalled")
+
+        if missing:
+            raise RuntimeError(
+                "device_install_uninstall payload incompleto: "
+                + ", ".join(missing)
+            )
+
+        unistall_part_id = _get_mysim_part_id_by_part_code(str(unistall_part))
+
+        if unistall_part_id is None:
+            raise RuntimeError(
+                f"unistall_part_not_found_in_mysim:{unistall_part}"
+            )
+
+        row["unistallPart"] = int(unistall_part_id)
+        row["destUninstalledPart"] = int(dest_uninstalled_part)
+        row["uninstalledBy"] = int(uninstalled_by)
+        row["whyIsItUninstalled"] = str(why_is_it_uninstalled)
+
     payload = [row]
 
     _log(
@@ -324,7 +459,6 @@ def _build_mysim_payload(db: Session, movement: Movement) -> list[dict[str, Any]
     )
 
     return payload
-
 
 def _post_to_mysim(entity: str, payload: list[dict[str, Any]]) -> dict[str, Any]:
     _log(f"_post_to_mysim | env_now base_url={os.getenv('MYSIM_BASE_URL')!r} token_present={bool(os.getenv('MYSIM_TOKEN'))}")
@@ -420,20 +554,44 @@ def _extract_mysim_movement_id(response_json: dict[str, Any]) -> str:
     return str(mysim_id)
 
 
-def _upload_movement_to_mysim(db: Session, movement: Movement) -> str:
+def _upload_movement_to_mysim(
+    db: Session,
+    movement: Movement,
+    outbox_payload: dict | None = None,
+) -> str:
+    outbox_payload = outbox_payload or {}
+
     _log(f"_upload_movement_to_mysim | movement_id={movement.id}")
-    payload = _build_mysim_payload(db, movement)
+
+    payload = _build_mysim_payload(
+        db,
+        movement,
+        outbox_payload=outbox_payload,
+    )
+
     response_json = _post_to_mysim("movement", payload)
     mysim_movement_id = _extract_mysim_movement_id(response_json)
+
     _log(
         f"_upload_movement_to_mysim | success movement_id={movement.id} "
         f"mysim_movement_id={mysim_movement_id}"
     )
+
     return mysim_movement_id
 
 
-def sync_movement_to_mysim(db: Session, movement_id: int) -> Movement:
-    _log(f"sync_movement_to_mysim | start movement_id={movement_id}")
+def sync_movement_to_mysim(
+    db: Session,
+    movement_id: int,
+    outbox_payload: dict | None = None,
+) -> Movement:
+    outbox_payload = outbox_payload or {}
+
+    _log(
+        f"sync_movement_to_mysim | start movement_id={movement_id} "
+        f"has_outbox_payload={bool(outbox_payload)}"
+    )
+
     movement = _get_movement_or_raise(db, movement_id)
 
     _log(
@@ -447,7 +605,11 @@ def sync_movement_to_mysim(db: Session, movement_id: int) -> Movement:
         )
 
     try:
-        mysim_movement_id = _upload_movement_to_mysim(db, movement)
+        mysim_movement_id = _upload_movement_to_mysim(
+            db,
+            movement,
+            outbox_payload=outbox_payload,
+        )
 
         movement.mysim_movement_id = mysim_movement_id
         movement.mysim_sync_status = "ok"

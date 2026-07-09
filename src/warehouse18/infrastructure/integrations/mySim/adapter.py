@@ -51,6 +51,28 @@ MOVEMENT_UPDATE_FIELDS = {
     "transporte",
 }
 
+def _mysim_location(value):
+    """
+    Normaliza localizaciones para mySim.
+
+    mySim espera IDs numéricos:
+    - Device => 1
+    - "1"    => 1
+    - "1995" => 1995
+    """
+    if value is None:
+        return None
+
+    raw = str(value).strip()
+
+    if not raw:
+        return None
+
+    if raw.lower() == "device":
+        return 1
+
+    return int(raw)
+
 class MySimAdapter:
     """
     Adaptador de infraestructura entre tu dominio (warehouse18)
@@ -274,11 +296,13 @@ class MySimAdapter:
             "movementDescription": req.description or "",
         }
 
-        if req.origin:
-            row["sourceLocation"] = int(req.origin)
+        origin = _mysim_location(req.origin)
+        if origin is not None:
+            row["sourceLocation"] = origin
 
-        if req.destination:
-            row["destinationLocation"] = int(req.destination)
+        destination = _mysim_location(req.destination)
+        if destination is not None:
+            row["destinationLocation"] = destination
 
         if req.done_by:
             row["doneBy"] = int(req.done_by)
@@ -287,30 +311,50 @@ class MySimAdapter:
             row["date"] = req.date
 
         # -----------------------------------------------------
-        # 3) Uninstall/install flow (opcional)
+        # 3) Install/uninstall flow hacia Device
         # -----------------------------------------------------
+        is_device_destination = destination == 1
+
         uninstall_part_id = getattr(req, "uninstall_part_id", None)
 
-        # Compatibilidad con tu antiguo typo
-        if uninstall_part_id is None and getattr(req, "unistall_part", None) is not None:
-            raw = str(req.unistall_part)
-            if raw.isdigit():
-                uninstall_part_id = int(raw)
+        if getattr(req, "unistall_part", None) is not None:
+            raw_uninstall_part = str(req.unistall_part).strip()
+
+            if not raw_uninstall_part:
+                raise ValueError("unistall_part_empty")
+
+            if raw_uninstall_part.isdigit():
+                uninstall_part_id = int(raw_uninstall_part)
             else:
-                uninstall_part_id = self.get_part_id_by_part_code(raw)
+                uninstall_part_id = self.get_part_id_by_part_code(raw_uninstall_part)
+
+            if uninstall_part_id is None:
+                raise ValueError(f"unistall_part_not_found_in_mysim:{raw_uninstall_part}")
+
+        if is_device_destination:
+            # En mySim, cuando instalas en Device:
+            # - idCol es el part instalado
+            # - installPart también queda como el part instalado
+            row["installPart"] = int(req.part_db_id)
 
         if uninstall_part_id is not None:
-            row["uninstallPart"] = int(uninstall_part_id)
+            # mySim usa históricamente "unistallPart".
+            # Dejo también "uninstallPart" solo si quieres mantener compatibilidad,
+            # pero el campo confirmado por tu GET es "unistallPart".
             row["unistallPart"] = int(uninstall_part_id)
 
-            if req.dest_uninstalled_part is not None:
-                row["destUninstalledPart"] = int(req.dest_uninstalled_part)
+            # Opcional: si ves que mySim acepta también el nombre corregido,
+            # puedes mantenerlo. Si te da problemas, bórralo.
+            row["uninstallPart"] = int(uninstall_part_id)
 
-            if req.uninstalled_by is not None:
-                row["uninstalledBy"] = int(req.uninstalled_by)
+        if req.dest_uninstalled_part is not None:
+            row["destUninstalledPart"] = int(req.dest_uninstalled_part)
 
-            if req.why_is_it_uninstalled:
-                row["whyIsItUninstalled"] = req.why_is_it_uninstalled
+        if req.uninstalled_by is not None:
+            row["uninstalledBy"] = int(req.uninstalled_by)
+
+        if req.why_is_it_uninstalled:
+            row["whyIsItUninstalled"] = req.why_is_it_uninstalled
 
         # -----------------------------------------------------
         # 4) Enviar vía SET

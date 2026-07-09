@@ -40,6 +40,30 @@ console = Console()
 def _json(obj: Any) -> str:
     return json.dumps(obj, indent=2, ensure_ascii=False)
 
+def _movement_location_value(value: str | int | None) -> int | str | None:
+    """
+    Normaliza localizaciones para movimientos mySim.
+
+    mySim entiende:
+    - Device => 1
+    - "1"    => 1
+    - "6"    => 6
+    """
+    if value is None:
+        return None
+
+    raw = str(value).strip()
+
+    if not raw:
+        return None
+
+    if raw.lower() == "device":
+        return 1
+
+    if raw.isdigit():
+        return int(raw)
+
+    return raw
 
 def _bootstrap() -> MySimAdapter:
     # Carga .env si existe (si no existe, seguirá tirando de env del sistema)
@@ -451,12 +475,38 @@ def parts_upload_movement(
     parent_record: str | None = typer.Option(None, "--parent-record", help="parentRecord (opcional)."),
     version_installed: str | None = typer.Option(None, "--version-installed", help="versionInstalled (opcional)."),
 
+    # ---------------------------------------------------------
+    # Device install/uninstall flow
+    # ---------------------------------------------------------
+    unistall_part: str | None = typer.Option(
+        None,
+        "--unistall-part",
+        "--uninstall-part-code",
+        help="PartId o ID interno mySim de la pieza que se desinstala. Ej: 400-0774",
+    ),
+    dest_uninstalled_part: int | None = typer.Option(
+        None,
+        "--dest-uninstalled-part",
+        help="ID mySim de la localización a la que irá la pieza desinstalada.",
+    ),
+    uninstalled_by: int | None = typer.Option(
+        None,
+        "--uninstalled-by",
+        help="ID mySim del usuario que desinstala.",
+    ),
+    why_uninstalled: str | None = typer.Option(
+        None,
+        "--why-uninstalled",
+        help="Motivo de la desinstalación.",
+    ),
+
     as_json: bool = typer.Option(True, "--json/--no-json", help="Imprimir respuesta JSON."),
 ):
     """
     Crea/sube un movimiento para un part usando POST directo a:
       /set?entity=movement&extraQuery=...
-    igual que el script manual que sí funciona.
+
+    También soporta el flujo install/uninstall cuando destinationLocation es Device.
     """
     load_dotenv()
     cfg = MySimConfig.from_env()
@@ -467,7 +517,12 @@ def parts_upload_movement(
     final_dest = dest_special.value if dest_special else dest
     final_origin = origin_special.value if origin_special else origin
 
-    # Validación funcional básica
+    final_dest_value = _movement_location_value(final_dest)
+    final_origin_value = _movement_location_value(final_origin)
+
+    # Validación funcional básica.
+    # Importante: aquí pasamos destination como texto si viene "Device",
+    # para que MovementRequest pueda aplicar la validación del workflow.
     req = MovementRequest(
         part_db_id=pid,
         movement_type=movement_type,
@@ -476,6 +531,10 @@ def parts_upload_movement(
         description=desc,
         done_by=done_by,
         date=date,
+        unistall_part=unistall_part,
+        dest_uninstalled_part=dest_uninstalled_part,
+        uninstalled_by=uninstalled_by,
+        why_is_it_uninstalled=why_uninstalled,
     )
 
     try:
@@ -490,10 +549,10 @@ def parts_upload_movement(
     row: dict[str, Any] = {
         "id": 0,
         "entity": "Parts",
-        "idCol": pid,
+        "idCol": int(pid),
         "movementType": movement_type_id,
         "movementType.name": movement_type_name,
-        "quantity": quantity,
+        "quantity": int(quantity),
         "movementDescription": desc,
     }
 
@@ -506,11 +565,11 @@ def parts_upload_movement(
     if date:
         row["date"] = date
 
-    if final_origin:
-        row["sourceLocation"] = final_origin
+    if final_origin_value is not None:
+        row["sourceLocation"] = final_origin_value
 
-    if final_dest:
-        row["destinationLocation"] = final_dest
+    if final_dest_value is not None:
+        row["destinationLocation"] = final_dest_value
 
     # Para parecerse más al script manual que te funciona
     if parent_record:
@@ -520,6 +579,47 @@ def parts_upload_movement(
 
     if version_installed is not None:
         row["versionInstalled"] = version_installed
+
+    # ---------------------------------------------------------
+    # Device install/uninstall
+    # ---------------------------------------------------------
+    is_device_destination = final_dest_value == 1
+
+    if is_device_destination:
+        # Confirmado por tus movimientos reales:
+        # idCol = part instalado
+        # installPart = part instalado
+        row["installPart"] = int(pid)
+
+    if unistall_part is not None:
+        raw_unistall_part = str(unistall_part).strip()
+
+        if not raw_unistall_part:
+            raise typer.BadParameter("unistall_part no puede estar vacío.")
+
+        if raw_unistall_part.isdigit():
+            unistall_part_id = int(raw_unistall_part)
+        else:
+            unistall_part_id = api.get_part_id_by_part_code(raw_unistall_part)
+
+        if unistall_part_id is None:
+            raise typer.BadParameter(
+                f"No se encontró la pieza a desinstalar en mySim: {raw_unistall_part}"
+            )
+
+        # Ojo al typo histórico de mySim: el campo real confirmado es "unistallPart".
+        row["unistallPart"] = int(unistall_part_id)
+
+    if dest_uninstalled_part is not None:
+        row["destUninstalledPart"] = int(dest_uninstalled_part)
+
+    if uninstalled_by is not None:
+        row["uninstalledBy"] = int(uninstalled_by)
+
+    if why_uninstalled:
+        row["whyIsItUninstalled"] = why_uninstalled
+
+    print("ROW SENT TO MYSIM /set:", row)
 
     try:
         resp = _post_movement_direct(cfg, row)

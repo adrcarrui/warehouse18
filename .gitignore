@@ -51,3 +51,30 @@ frontend/**/.vite/
 *.7z
 
 .tmp_sdk_review/
+
+# Android / Gradle
+.gradle/
+build/
+*/build/
+app/build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Android Studio
+.idea/
+*.iml
+
+# Local config
+local.properties
+
+# APK / AAB generados
+*.apk
+*.aab
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

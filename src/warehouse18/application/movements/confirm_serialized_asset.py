@@ -12,6 +12,7 @@ from warehouse18.domain.models import (
     AssetLocation,
     IntegrationOutbox,
     Item,
+    Location,
     Movement,
     MovementAsset,
     MovementType,
@@ -421,13 +422,14 @@ def _enqueue_mysim_outbox_event(
     item: Item,
     asset: Asset,
     movement_type_code: str,
+    device_install_uninstall: dict | None = None,
 ) -> None:
     existing = (
         db.query(IntegrationOutbox)
         .filter(IntegrationOutbox.target_system == "mysim")
-        .filter(IntegrationOutbox.entity_type == "asset")
-        .filter(IntegrationOutbox.entity_id == asset.id)
-        .filter(IntegrationOutbox.action == "serialized_asset_confirmed")
+        .filter(IntegrationOutbox.entity_type == "movement")
+        .filter(IntegrationOutbox.entity_id == movement.id)
+        .filter(IntegrationOutbox.action == "sync")
         .filter(
             IntegrationOutbox.status.in_(
                 ["pending", "processing", "sent", "error"]
@@ -442,12 +444,31 @@ def _enqueue_mysim_outbox_event(
     if existing is not None:
         return
 
+    payload_json = {
+        "movement_id": movement.id,
+        "movement_type": movement_type_code,
+        "item_id": item.id,
+        "item_code": item.item_code,
+        "asset_id": asset.id,
+        "asset_code": asset.asset_code,
+        "from_location_id": movement.from_location_id,
+        "to_location_id": movement.to_location_id,
+    }
+
+    if device_install_uninstall:
+        payload_json["device_install_uninstall"] = {
+            "unistall_part": device_install_uninstall.get("unistall_part"),
+            "dest_uninstalled_part": device_install_uninstall.get("dest_uninstalled_part"),
+            "uninstalled_by": device_install_uninstall.get("uninstalled_by"),
+            "why_is_it_uninstalled": device_install_uninstall.get("why_is_it_uninstalled"),
+        }
+
     db.add(
         IntegrationOutbox(
             direction="outbound",
             target_system="mysim",
-            entity_type="asset",
-            entity_id=asset.id,
+            entity_type="movement",
+            entity_id=movement.id,
             action="serialized_asset_confirmed",
             payload_json={
                 "movement_id": movement.id,
@@ -465,6 +486,24 @@ def _enqueue_mysim_outbox_event(
     )
     db.flush()
 
+def _is_device_destination(db: Session, movement: Movement) -> bool:
+    if movement.to_location_id is None:
+        return False
+
+    location = (
+        db.query(Location)
+        .filter(Location.id == movement.to_location_id)
+        .first()
+    )
+
+    if location is None:
+        return False
+
+    code = str(getattr(location, "code", "") or "").strip().lower()
+    name = str(getattr(location, "name", "") or "").strip().lower()
+
+    return code == "1" or code == "device" or name == "device"
+
 def confirm_serialized_asset_movement(
     db: Session,
     *,
@@ -473,6 +512,12 @@ def confirm_serialized_asset_movement(
     item_code: str | None = None,
     create_enrichment: bool = True,
     enqueue_sync: bool = True,
+
+    # Device install/uninstall
+    unistall_part: str | None = None,
+    dest_uninstalled_part: int | None = None,
+    uninstalled_by: int | None = None,
+    why_is_it_uninstalled: str | None = None,
 ) -> ConfirmSerializedAssetResult:
     movement = (
         db.query(Movement)
@@ -484,6 +529,28 @@ def confirm_serialized_asset_movement(
         raise ConfirmSerializedAssetError("Movement not found")
 
     movement_type_code = _get_movement_type_code(db, movement)
+
+    is_device_destination = _is_device_destination(db, movement)
+
+    if is_device_destination:
+        missing = []
+
+        if not unistall_part:
+            missing.append("unistall_part")
+
+        if dest_uninstalled_part is None:
+            missing.append("dest_uninstalled_part")
+
+        if uninstalled_by is None:
+            missing.append("uninstalled_by")
+
+        if not why_is_it_uninstalled:
+            missing.append("why_is_it_uninstalled")
+
+        if missing:
+            raise ConfirmSerializedAssetError(
+                "Device destination requires: " + ", ".join(missing)
+            )
 
     resolved_asset_code = (
         _normalize_code(asset_code)
@@ -554,12 +621,23 @@ def confirm_serialized_asset_movement(
         _ensure_asset_enrichment(db, asset=asset)
 
     if enqueue_sync:
+        device_payload = None
+
+        if _is_device_destination(db, movement):
+            device_payload = {
+                "unistall_part": unistall_part,
+                "dest_uninstalled_part": dest_uninstalled_part,
+                "uninstalled_by": uninstalled_by,
+                "why_is_it_uninstalled": why_is_it_uninstalled,
+            }
+
         _enqueue_mysim_outbox_event(
             db,
             movement=movement,
             item=item,
             asset=asset,
             movement_type_code=movement_type_code,
+            device_install_uninstall=device_payload,
         )
 
     db.flush()

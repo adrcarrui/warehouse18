@@ -14,6 +14,7 @@ import {
   Radio,
   Activity,
   BellRing,
+  ClipboardList
 } from "lucide-react";
 import { cn } from "../lib/cn";
 
@@ -36,6 +37,8 @@ const NAV: NavItem[] = [
   { label: "Pistol WS Test", href: "/pistol/ws-test", icon: Package },
   { label: "Pistol WS Monitor", href: "/pistol/ws-monitor", icon: Package },
   { label: "Alerts", href: "/alerts", icon: BellRing },
+  { label: "Inventory by Location", href: "/location-inventory", icon: Radio },
+  { label: "Handheld Inventory", href: "/handheld-inventory-submits", icon: ClipboardList }
   //{ label: "Settings", href: "/settings", icon: Settings },
 ];
 

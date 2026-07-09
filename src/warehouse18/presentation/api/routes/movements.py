@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 import logging
+import json
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import or_, select, text, Integer, cast, func
 from datetime import datetime, timezone
@@ -1497,7 +1498,11 @@ def confirm_serialized_asset_endpoint(
             item_code=payload.item_code,
             create_enrichment=payload.create_enrichment,
             enqueue_sync=payload.enqueue_sync,
-        )
+            unistall_part=payload.unistall_part,
+            dest_uninstalled_part=payload.dest_uninstalled_part,
+            uninstalled_by=payload.uninstalled_by,
+            why_is_it_uninstalled=payload.why_is_it_uninstalled,
+)
 
         db.flush()
         db.refresh(mv)
@@ -1511,6 +1516,9 @@ def confirm_serialized_asset_endpoint(
         mv.reviewed_at = datetime.now(timezone.utc)
         mv.reviewed_by_user_id = payload.reviewed_by_user_id
         mv.review_note = payload.review_note
+
+        if payload.done_by is not None:
+            mv.mysim_user_id = payload.done_by
 
         mv.needs_report = reason is not None
         mv.report_reason = reason
@@ -1534,7 +1542,24 @@ def confirm_serialized_asset_endpoint(
 
         db.add(mv)
         db.flush()
+        outbox_payload = {
+                "movement_id": mv.id,
+            }
 
+        has_device_install_uninstall_payload = (
+                payload.unistall_part
+                or payload.dest_uninstalled_part is not None
+                or payload.uninstalled_by is not None
+                or payload.why_is_it_uninstalled
+            )
+
+        if has_device_install_uninstall_payload:
+            outbox_payload["device_install_uninstall"] = {
+                "unistall_part": payload.unistall_part,
+                "dest_uninstalled_part": payload.dest_uninstalled_part,
+                "uninstalled_by": payload.uninstalled_by,
+                "why_is_it_uninstalled": payload.why_is_it_uninstalled,
+            }
         existing_outbox = db.execute(
             text(
                 """
@@ -1582,8 +1607,28 @@ def confirm_serialized_asset_endpoint(
                     """
                 ),
                 {
-                    "movement_id": mv.id,
-                    "payload_json": "{}",
+                "movement_id": mv.id,
+                "payload_json": json.dumps(outbox_payload),
+
+                },
+            )
+        else:
+            db.execute(
+                text(
+                    """
+                    UPDATE integration_outbox
+                    SET
+                        payload_json = CAST(:payload_json AS jsonb),
+                        status = 'pending',
+                        retries = 0,
+                        next_retry_at = now(),
+                        last_error = NULL
+                    WHERE id = :outbox_id
+                    """
+                ),
+                {
+                    "outbox_id": existing_outbox[0],
+                    "payload_json": json.dumps(outbox_payload),
                 },
             )
 

@@ -13,6 +13,8 @@ import ItemLocationPage from "./pages/ItemLocationPage";
 import PistolSendEpcPage from "./pages/PistolSendEpcPage";
 import PistolWsTestPage from "./pages/PistolWsTestPage";
 import AlertsPage from "./pages/Alerts";
+import HandheldInventoryPage from "./pages/WarehouseInventoryPage";
+import HandheldInventorySubmitsPage from "./pages/HandheldInventorySubmitsPage";
 import "./index.css"
 
 
@@ -31,6 +33,8 @@ function Home() {
         <li><Link to="/rfid-review">RFIDReview</Link></li>
         <li><Link to="/item-location">Item Location</Link></li>
         <li><Link to="/alerts">Alerts</Link></li>
+        <li><Link to="/location-inventory">Location Inventory</Link></li>
+        <li><Link to="/handheld-inventory/submits">Handheld Inventory Submits</Link></li>
       </ul>
     </div>
   );
@@ -53,6 +57,9 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         <Route path="/pistol/send-epc" element={<PistolSendEpcPage />} />
         <Route path="/pistol/ws-test" element={<PistolWsTestPage />} />
         <Route path="/alerts" element={<AlertsPage />} />
+        <Route path="/location-inventory" element={<HandheldInventoryPage />} />
+        <Route path="/handheld-inventory-submits" element={<HandheldInventorySubmitsPage />}
+        />
       </Routes>
     </BrowserRouter>
   //</React.StrictMode>

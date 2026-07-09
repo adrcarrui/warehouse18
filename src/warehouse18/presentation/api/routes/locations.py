@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, text
 from sqlalchemy.orm import Session
 
 from warehouse18.infrastructure.db import get_db
@@ -15,8 +15,27 @@ from sqlalchemy.exc import IntegrityError
 
 from warehouse18.presentation.api.paging import paginate
 from warehouse18.presentation.api.pagination_headers import set_pagination_headers
+import json
+import uuid
+from typing import Literal
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/locations", tags=["locations"])
+
+class HandheldInventorySubmitRowIn(BaseModel):
+    item_code: str = Field(min_length=1)
+    reads: int = Field(ge=0)
+    status: Literal["OK", "PENDING"]
+
+
+class HandheldInventorySubmitIn(BaseModel):
+    location_id: int
+    location_label: str | None = None
+    reader_id: str = Field(min_length=1)
+    total_items: int = Field(ge=0)
+    ok_items: int = Field(ge=0)
+    pending_items: int = Field(ge=0)
+    rows: list[HandheldInventorySubmitRowIn]
 
 def extract_item_prefix(item_key: str) -> str:
     value = (item_key or "").strip().upper()
@@ -61,6 +80,105 @@ def resolve_device_group_from_item_key(
 
     _, device_group = row
     return prefix, device_group
+
+@router.post("/{location_id}/handheld-inventory/submit")
+def submit_handheld_inventory(
+    location_id: int,
+    body: HandheldInventorySubmitIn,
+    db: Session = Depends(get_db),
+):
+    if body.location_id != location_id:
+        raise HTTPException(
+            status_code=409,
+            detail="location_id in URL does not match body.location_id",
+        )
+
+    loc = db.query(Location).filter(Location.id == location_id).first()
+
+    if not loc:
+        raise HTTPException(status_code=409, detail="Location not found")
+
+    if body.total_items != len(body.rows):
+        raise HTTPException(
+            status_code=409,
+            detail="total_items does not match rows length",
+        )
+
+    calculated_ok = sum(1 for row in body.rows if row.status == "OK")
+    calculated_pending = sum(1 for row in body.rows if row.status == "PENDING")
+
+    if body.ok_items != calculated_ok:
+        raise HTTPException(
+            status_code=409,
+            detail="ok_items does not match rows",
+        )
+
+    if body.pending_items != calculated_pending:
+        raise HTTPException(
+            status_code=409,
+            detail="pending_items does not match rows",
+        )
+
+    request_id = str(uuid.uuid4())
+
+    payload = body.model_dump()
+    payload["resolved_location"] = {
+        "id": loc.id,
+        "code": loc.code,
+        "name": loc.name,
+        "type": loc.type,
+    }
+
+    stmt = text("""
+        INSERT INTO audit_log (
+            action,
+            entity_type,
+            entity_id,
+            before_json,
+            after_json,
+            request_id
+        )
+        VALUES (
+            :action,
+            :entity_type,
+            :entity_id,
+            NULL,
+            CAST(:after_json AS jsonb),
+            :request_id
+        )
+        RETURNING id
+    """)
+
+    try:
+        audit_id = db.execute(
+            stmt,
+            {
+                "action": "HANDHELD_INVENTORY_SUBMIT",
+                "entity_type": "location",
+                "entity_id": location_id,
+                "after_json": json.dumps(payload, ensure_ascii=False),
+                "request_id": request_id,
+            },
+        ).scalar_one()
+
+        db.commit()
+
+        return {
+            "ok": True,
+            "audit_id": audit_id,
+            "request_id": request_id,
+            "location_id": location_id,
+            "received_rows": len(body.rows),
+            "ok_items": calculated_ok,
+            "pending_items": calculated_pending,
+        }
+
+    except Exception as ex:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=f"Error saving handheld inventory submit: {ex}",
+        )
 
 @router.post("/", response_model=LocationOut)
 def create_location(body: LocationCreateIn, db: Session = Depends(get_db)):

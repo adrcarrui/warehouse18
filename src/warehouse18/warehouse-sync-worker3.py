@@ -1,275 +1,217 @@
-from __future__ import annotations
-
 import os
+import json
 import time
 import traceback
-from datetime import datetime, timedelta, timezone
+from typing import Any, Dict
 
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.exc import DBAPIError
 
-# Ajusta este import si en tu proyecto SessionLocal vive en otro módulo
-from warehouse18.infrastructure.db import SessionLocal
 
-from warehouse18.application.integrations.mysim_sync_service import (
-    sync_movement_to_mysim,
+# =========================
+# Configuración
+# =========================
+DSN = os.environ.get(
+    "WAREHOUSE18_DSN",
+    "postgresql://postgres:admin@127.0.0.1:5432/warehouse18",
+)
+
+POLL_SECONDS = 2.0
+MAX_RETRIES = 5            # <- AQUÍ decides cuántas veces reintentar
+BASE_BACKOFF_SECONDS = 5   # <- base del backoff
+
+TZ = "Europe/Madrid"
+
+
+# =========================
+# SQL
+# =========================
+PICK_SQL = """
+WITH picked AS (
+  SELECT id
+  FROM integration_outbox
+  WHERE status = 'pending'
+    AND (next_retry_at IS NULL OR next_retry_at <= now())
+  ORDER BY created_at
+  FOR UPDATE SKIP LOCKED
+  LIMIT 50
+)
+SELECT o.id, o.entity_type, o.entity_id, o.action, o.payload_json, o.retries
+FROM integration_outbox o
+JOIN picked p ON p.id = o.id
+ORDER BY o.created_at;
+"""
+
+MARK_SENT_SQL = """
+UPDATE integration_outbox
+SET status = 'sent',
+    last_attempt_at = now()
+WHERE id = :id;
+"""
+
+# Nota: hacemos cast a interval para que el bind param funcione siempre
+MARK_RETRY_SQL = """
+UPDATE integration_outbox
+SET status = 'pending',
+    retries = retries + 1,
+    last_attempt_at = now(),
+    next_retry_at = now() + (:base_interval::interval * (retries + 1))
+WHERE id = :id;
+"""
+
+MARK_FAILED_SQL = """
+UPDATE integration_outbox
+SET status = 'failed',
+    last_attempt_at = now()
+WHERE id = :id;
+"""
+
+LOG_ERROR_SQL = """
+INSERT INTO error_log (
+  severity, source, operation, entity_type, entity_id, message, metadata_json
+)
+VALUES ('error', 'warehouse-sync-worker', 'outbox_send', :entity_type, :entity_id, :message, :metadata_json::jsonb);
+"""
+
+
+# =========================
+# API placeholder
+# =========================
+def send_to_api(
+    entity_type: str,
+    entity_id: int,
+    action: str,
+    payload: Dict[str, Any],
+) -> None:
+    """
+    Aquí va tu integración real (requests.post, etc.)
+    Lanza excepción si falla.
+    """
+    # Simulación: fuerza fallo si la acción contiene 'fail'
+    if "fail" in action:
+        raise RuntimeError("Simulated API failure")
+
+    # En producción:
+    # response = requests.post(URL, json=payload, timeout=5)
+    # if response.status_code not in (200, 201, 204):
+    #     raise RuntimeError(f"API error {response.status_code}")
+
+    return
+
+
+# =========================
+# SQLAlchemy setup
+# =========================
+engine = create_engine(
+    DSN,
+    pool_pre_ping=True,
+)
+
+SessionLocal = sessionmaker(
+    bind=engine,
+    autoflush=False,
+    autocommit=False,
+    expire_on_commit=False,
 )
 
 
-POLL_SECONDS = float(os.getenv("WAREHOUSE_OUTBOX_POLL_SECONDS", "2"))
-BATCH_SIZE = int(os.getenv("WAREHOUSE_OUTBOX_BATCH_SIZE", "10"))
-MAX_RETRIES = int(os.getenv("WAREHOUSE_OUTBOX_MAX_RETRIES", "5"))
-BACKOFF_SECONDS = int(os.getenv("WAREHOUSE_OUTBOX_BACKOFF_SECONDS", "30"))
+# =========================
+# Worker loop
+# =========================
+def main() -> None:
+    print("[warehouse-sync-worker] started")
 
+    pick_stmt = text(PICK_SQL)
+    mark_sent_stmt = text(MARK_SENT_SQL)
+    mark_retry_stmt = text(MARK_RETRY_SQL)
+    mark_failed_stmt = text(MARK_FAILED_SQL)
+    log_error_stmt = text(LOG_ERROR_SQL)
+    set_tz_stmt = text(f"SET timezone TO '{TZ}';")
 
-FETCH_PENDING_SQL = """
-SELECT
-    id,
-    direction,
-    target_system,
-    entity_type,
-    entity_id,
-    action,
-    payload_json,
-    status,
-    retries,
-    next_retry_at,
-    created_at,
-    last_attempt_at,
-    last_error
-FROM integration_outbox
-WHERE status = 'pending'
-  AND COALESCE(next_retry_at, NOW()) <= NOW()
-ORDER BY id
-LIMIT :batch_size
-"""
+    base_interval = f"{BASE_BACKOFF_SECONDS} seconds"
 
-MARK_OUTBOX_SENT_SQL = """
-UPDATE integration_outbox
-SET
-    status = 'sent',
-    last_attempt_at = NOW(),
-    last_error = NULL
-WHERE id = :outbox_id
-"""
+    while True:
+        processed_any = False
 
-MARK_OUTBOX_ERROR_SQL = """
-UPDATE integration_outbox
-SET
-    retries = COALESCE(retries, 0) + 1,
-    status = CASE
-        WHEN COALESCE(retries, 0) + 1 >= :max_retries THEN 'error'
-        ELSE 'pending'
-    END,
-    next_retry_at = CASE
-        WHEN COALESCE(retries, 0) + 1 >= :max_retries THEN NULL
-        ELSE :next_retry_at
-    END,
-    last_attempt_at = NOW(),
-    last_error = :last_error
-WHERE id = :outbox_id
-"""
+        # 1 sesión por iteración: bloquea, procesa, commitea o rollback.
+        db = SessionLocal()
+        try:
+            # Mantiene el mismo comportamiento que tu psycopg:
+            # selecciona + marca sent/retry/failed dentro de la misma transacción.
+            with db.begin():
+                db.execute(set_tz_stmt)
+                rows = db.execute(pick_stmt).all()
 
-MARK_MOVEMENT_SYNCING_SQL = """
-UPDATE movements
-SET
-    mysim_sync_status = 'syncing',
-    mysim_sync_error = NULL
-WHERE id = :movement_id
-"""
-
-MARK_MOVEMENT_ERROR_SQL = """
-UPDATE movements
-SET
-    mysim_sync_status = 'error',
-    mysim_sync_error = :error_text
-WHERE id = :movement_id
-"""
-
-
-def debug_outbox(db: Session) -> None:
-    print("\n================ DEBUG OUTBOX ================")
-
-    try:
-        print(f"[DEBUG] DB URL = {db.get_bind().engine.url}")
-    except Exception as e:
-        print(f"[DEBUG] No se pudo obtener DB URL: {e}")
-
-    try:
-        pending_count = db.execute(
-            text("SELECT count(*) FROM integration_outbox WHERE status = 'pending'")
-        ).scalar()
-        print(f"[DEBUG] pending_count = {pending_count}")
-    except Exception as e:
-        print(f"[DEBUG] Error contando pending: {e}")
-
-    try:
-        rows = db.execute(
-            text("""
-                SELECT
-                    id,
-                    direction,
-                    target_system,
+                for (
+                    outbox_id,
                     entity_type,
                     entity_id,
                     action,
-                    status,
+                    payload_json,
                     retries,
-                    next_retry_at,
-                    created_at,
-                    last_error
-                FROM integration_outbox
-                WHERE status = 'pending'
-                ORDER BY id DESC
-                LIMIT 10
-            """)
-        ).mappings().all()
+                ) in rows:
+                    processed_any = True
 
-        print("[DEBUG] pending_rows =")
-        if not rows:
-            print("    (sin filas)")
-        else:
-            for r in rows:
-                print("   ", dict(r))
-    except Exception as e:
-        print(f"[DEBUG] Error listando pending_rows: {e}")
+                    try:
+                        payload = (
+                            payload_json
+                            if isinstance(payload_json, dict)
+                            else json.loads(payload_json)
+                        )
 
-    print("==============================================\n")
+                        send_to_api(entity_type, entity_id, action, payload)
 
+                        db.execute(mark_sent_stmt, {"id": outbox_id})
+                        print(f"[warehouse-sync-worker] SENT id={outbox_id} action={action}")
 
-def fetch_pending_jobs(db: Session, batch_size: int) -> list[dict]:
-    rows = db.execute(
-        text(FETCH_PENDING_SQL),
-        {"batch_size": batch_size},
-    ).mappings().all()
+                    except Exception as e:
+                        # ⛔ Límite de reintentos alcanzado
+                        if retries >= MAX_RETRIES:
+                            db.execute(mark_failed_stmt, {"id": outbox_id})
+                            print(
+                                f"[warehouse-sync-worker] FAILED id={outbox_id} "
+                                f"action={action} retries={retries}"
+                            )
+                        else:
+                            # 🔁 Reintento con backoff
+                            db.execute(
+                                mark_retry_stmt,
+                                {"id": outbox_id, "base_interval": base_interval},
+                            )
+                            print(
+                                f"[warehouse-sync-worker] RETRY id={outbox_id} "
+                                f"action={action} retries={retries + 1}"
+                            )
 
-    jobs = [dict(r) for r in rows]
+                        meta = {
+                            "outbox_id": outbox_id,
+                            "action": action,
+                            "retries_before": retries,
+                            "exception": repr(e),
+                            "traceback": traceback.format_exc(),
+                            "payload": payload_json,
+                        }
 
-    print(f"[outbox] fetched_jobs={len(jobs)}")
-    for job in jobs:
-        print(f"[outbox] fetched_row={job}")
+                        db.execute(
+                            log_error_stmt,
+                            {
+                                "entity_type": entity_type,
+                                "entity_id": entity_id,
+                                "message": str(e)[:500],
+                                "metadata_json": json.dumps(meta),
+                            },
+                        )
 
-    return jobs
-
-
-def process_one_job(outbox_row: dict) -> None:
-    outbox_id = int(outbox_row["id"])
-    movement_id = int(outbox_row["entity_id"])
-    retries = int(outbox_row["retries"] or 0)
-
-    print(
-        f"[outbox] process_one_job | outbox_id={outbox_id} "
-        f"movement_id={movement_id} retries={retries} action={outbox_row.get('action')}"
-    )
-
-    db: Session = SessionLocal()
-    try:
-        db.execute(
-            text(MARK_MOVEMENT_SYNCING_SQL),
-            {
-                "movement_id": movement_id,
-            },
-        )
-        db.commit()
-
-        print(
-            f"[outbox] movement marked syncing | outbox_id={outbox_id} "
-            f"movement_id={movement_id}"
-        )
-
-        movement = sync_movement_to_mysim(db, movement_id)
-
-        db.execute(
-            text(MARK_OUTBOX_SENT_SQL),
-            {
-                "outbox_id": outbox_id,
-            },
-        )
-        db.commit()
-
-        print(
-            f"[outbox] sent | outbox_id={outbox_id} movement_id={movement_id} "
-            f"mysim_status={movement.mysim_sync_status} "
-            f"mysim_movement_id={movement.mysim_movement_id}"
-        )
-
-    except Exception as e:
-        db.rollback()
-
-        error_text = str(e)[:2000]
-        next_retry_at = datetime.now(timezone.utc) + timedelta(
-            seconds=BACKOFF_SECONDS * (retries + 1)
-        )
-
-        print(
-            f"[outbox] exception | outbox_id={outbox_id} movement_id={movement_id} "
-            f"retry={retries + 1}/{MAX_RETRIES} error={error_text}"
-        )
-        print(traceback.format_exc())
-
-        try:
-            db.execute(
-                text(MARK_MOVEMENT_ERROR_SQL),
-                {
-                    "movement_id": movement_id,
-                    "error_text": error_text,
-                },
-            )
-            db.execute(
-                text(MARK_OUTBOX_ERROR_SQL),
-                {
-                    "outbox_id": outbox_id,
-                    "next_retry_at": next_retry_at,
-                    "last_error": error_text,
-                    "max_retries": MAX_RETRIES,
-                },
-            )
-            db.commit()
-
-            print(
-                f"[outbox] state updated after error | outbox_id={outbox_id} "
-                f"movement_id={movement_id} next_retry_at={next_retry_at.isoformat()}"
-            )
-        except Exception:
+            # Si no hubo rows, no hace falta esperar dentro del begin.
+        except DBAPIError as e:
+            # SQLAlchemy envuelve errores DB, deja registro simple y sigue.
             db.rollback()
-            print(
-                f"[outbox] fatal_error_updating_state | outbox_id={outbox_id} "
-                f"movement_id={movement_id}"
-            )
-            print(traceback.format_exc())
+            print("[warehouse-sync-worker] DBAPIError:", repr(e))
+        finally:
+            db.close()
 
-    finally:
-        db.close()
-
-
-def main() -> None:
-    print(
-        f"[outbox] worker started | poll={POLL_SECONDS}s batch={BATCH_SIZE} "
-        f"max_retries={MAX_RETRIES} backoff={BACKOFF_SECONDS}s"
-    )
-
-    while True:
-        try:
-            db: Session = SessionLocal()
-            try:
-                debug_outbox(db)
-                jobs = fetch_pending_jobs(db, BATCH_SIZE)
-            finally:
-                db.close()
-
-            if not jobs:
-                time.sleep(POLL_SECONDS)
-                continue
-
-            for job in jobs:
-                process_one_job(job)
-
-        except KeyboardInterrupt:
-            print("[outbox] worker stopped by user")
-            break
-        except Exception as e:
-            print(f"[outbox] loop_error | error={e}")
-            print(traceback.format_exc())
+        if not processed_any:
             time.sleep(POLL_SECONDS)
 
 

@@ -76,6 +76,7 @@ class UserOut(ORMBase):
     department: Optional[str] = None
     is_active: bool
     auth_provider: str
+    mysim_id: Optional[int] = None
     last_login_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
@@ -291,6 +292,32 @@ class MovementOut(ORMBase):
     detected_tracking_mode: Optional[str] = None
     detected_tid_hex: Optional[str] = None
 
+class MySimMovementCreateIn(BaseModel):
+    part_code: Optional[str] = None
+    part_db_id: Optional[int] = None
+
+    movement_type: str = Field(min_length=1)
+
+    origin: Optional[str] = None
+    destination: Optional[str] = None
+
+    description: str = ""
+    done_by: Optional[str] = None
+    date: Optional[str] = None
+    quantity: int = Field(default=1, ge=1)
+
+    # Device install/uninstall
+    unistall_part: Optional[str] = None
+    dest_uninstalled_part: Optional[int] = None
+    uninstalled_by: Optional[int] = None
+    why_is_it_uninstalled: Optional[str] = None
+
+
+class MySimMovementCreateOut(BaseModel):
+    status: str = "ok"
+    part_db_id: int
+    response: dict
+
 class ItemLocationOut(BaseModel):
     item_key: str
     found: bool
@@ -397,6 +424,11 @@ class ConfirmSerializedAssetIn(BaseModel):
     review_note: Optional[str] = None
     create_enrichment: bool = True
     enqueue_sync: bool = True
+    unistall_part: str | None = None
+    dest_uninstalled_part: int | None = None
+    uninstalled_by: int | None = None
+    why_is_it_uninstalled: str | None = None
+    done_by: Optional[int] = None
 
 
 class ConfirmSerializedAssetOut(BaseModel):
@@ -426,3 +458,59 @@ class ConfirmBulkMovementOut(BaseModel):
     container_code: Optional[str] = None
     quantity: Optional[Decimal] = None
     message: str
+
+class InventoryPartOut(BaseModel):
+    source_type: str
+
+    item_id: int
+    item_code: str
+
+    asset_id: Optional[int] = None
+    asset_code: Optional[str] = None
+
+    quantity: Decimal
+
+    location_id: int
+    location_code: str
+    location_name: str
+
+    rack_code: Optional[str] = None
+    shelf_code: Optional[str] = None
+    aisle_id: Optional[int] = None
+
+
+class ShelfInventoryOut(BaseModel):
+    location_id: int
+    location_code: str
+    location_name: str
+    rack_code: Optional[str] = None
+    shelf_code: Optional[str] = None
+    aisle_id: Optional[int] = None
+
+    parts: list[InventoryPartOut]
+
+class WarehouseDeviceGroupPartOut(BaseModel):
+    source_type: str
+
+    item_id: int
+    item_code: str
+
+    asset_id: Optional[int] = None
+    asset_code: Optional[str] = None
+
+    quantity: Decimal
+
+    location_id: int
+    location_code: str
+    location_name: str
+
+    rack_code: Optional[str] = None
+    shelf_code: Optional[str] = None
+    aisle_id: Optional[int] = None
+
+
+class WarehouseDeviceGroupPartsOut(BaseModel):
+    device_group_id: int
+    device_group_code: str
+    matched_prefixes: list[str]
+    parts: list[WarehouseDeviceGroupPartOut]
