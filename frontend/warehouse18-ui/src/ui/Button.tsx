@@ -1,4 +1,5 @@
 import React from "react";
+import { cn } from "../lib/cn";
 
 type Props = React.ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: "primary" | "secondary" | "outline" | "ghost" | "danger";
@@ -32,6 +33,6 @@ export function Button({
       : "bg-transparent text-zinc-700 hover:bg-zinc-100";
 
   return (
-    <button className={`${base} ${sizes} ${styles} ${className}`} {...props} />
+    <button className={cn(`${base} ${sizes} ${styles} ${className}`)} {...props} />
   );
 }

@@ -11,10 +11,13 @@
   },
   "dependencies": {
     "clsx": "^2.1.1",
+    "jsbarcode": "3.12.3",
     "lucide-react": "^0.575.0",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "react-is": "18.2.0",
     "react-router-dom": "^6.26.2",
+    "recharts": "3.9.2",
     "tailwind-merge": "^3.5.0"
   },
   "devDependencies": {
@@ -22,6 +25,7 @@
     "@tailwindcss/cli": "^4.2.0",
     "@tailwindcss/postcss": "^4.2.0",
     "@tailwindcss/vite": "^4.2.0",
+    "@types/jsbarcode": "3.11.4",
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",

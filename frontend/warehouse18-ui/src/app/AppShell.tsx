@@ -1,14 +1,13 @@
-import { ReactNode, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import type { ComponentType, ReactNode } from "react";
 import { SystemHealthBadge } from "../ui/SystemHealthBadge";
 import { Link, useLocation } from "react-router-dom";
-import { Outlet } from "react-router-dom";
 import {
   LayoutDashboard,
   Package,
   ArrowLeftRight,
   MapPin,
   Users,
-  Settings,
   ChevronLeft,
   ChevronRight,
   Radio,
@@ -21,24 +20,24 @@ import { cn } from "../lib/cn";
 type NavItem = {
   label: string;
   href: string;
-  icon: React.ComponentType<{ className?: string }>;
+  icon: ComponentType<{ className?: string }>;
 };
 
 const NAV: NavItem[] = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
+  { label: "Alerts", href: "/alerts", icon: BellRing },
   //{ label: "Items", href: "/items", icon: Package },
-  { label: "Movements", href: "/movements", icon: ArrowLeftRight },
-  { label: "Locations", href: "/locations", icon: MapPin },
-  { label: "Users", href: "/users", icon: Users },
-  { label: "RFID Monitor", href: "/rfid-monitor", icon: Activity },
   { label: "RFID Review", href: "/rfid-review", icon: Radio },
   { label: "Item Location", href: "/item-location", icon: MapPin },
-  { label: "Pistol Send EPC", href: "/pistol/send-epc", icon: Package },
-  { label: "Pistol WS Test", href: "/pistol/ws-test", icon: Package },
-  { label: "Pistol WS Monitor", href: "/pistol/ws-monitor", icon: Package },
-  { label: "Alerts", href: "/alerts", icon: BellRing },
   { label: "Inventory by Location", href: "/location-inventory", icon: Radio },
-  { label: "Handheld Inventory", href: "/handheld-inventory-submits", icon: ClipboardList }
+  { label: "Handheld Inventory", href: "/handheld-inventory-submits", icon: ClipboardList },
+  { label: "Movements", href: "/movements", icon: ArrowLeftRight },
+  //{ label: "Locations", href: "/locations", icon: MapPin },
+  //{ label: "Users", href: "/users", icon: Users },
+  //{ label: "RFID Monitor", href: "/rfid-monitor", icon: Activity },
+  /*{ label: "Pistol Send EPC", href: "/pistol/send-epc", icon: Package },
+  { label: "Pistol WS Test", href: "/pistol/ws-test", icon: Package },
+  { label: "Pistol WS Monitor", href: "/pistol/ws-monitor", icon: Package },*/
   //{ label: "Settings", href: "/settings", icon: Settings },
 ];
 

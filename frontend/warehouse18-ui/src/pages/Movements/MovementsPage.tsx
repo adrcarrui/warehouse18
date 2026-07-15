@@ -35,6 +35,15 @@ type MovementOut = {
   notes?: string | null;
   mysim_movement_id?: string | null;
   detected_aisle_id?: number | null;
+  aisle_name?: string | null;
+  aisle_code?: string | null;
+};
+
+type ItemOut = {
+  id: number;
+  item_code?: string | null;
+  name: string;
+  is_active?: boolean;
 };
 
 type MovementTypeOut = {
@@ -96,6 +105,67 @@ function locationLabel(
   if (loc?.code) return loc.code;
 
   return String(locationId);
+}
+
+function resolvedLocationName(
+  locationId: number | null | undefined,
+  locationMap: Record<number, LocationOut>
+) {
+  if (locationId == null) return "Not set";
+
+  const location = locationMap[locationId];
+  return location?.name || location?.code || "Location not found";
+}
+
+function itemName(
+  movement: MovementOut,
+  itemMap: Record<number, ItemOut>
+) {
+  if (movement.item_id != null) {
+    const item = itemMap[movement.item_id];
+
+    if (item?.name) return item.name;
+    if (item?.item_code) return item.item_code;
+  }
+
+  return movement.item_key || "Item not found";
+}
+
+function userFullName(
+  movement: MovementOut,
+  userMap: Record<number, UserOut>
+) {
+  if (movement.user_id != null) {
+    const user = userMap[movement.user_id];
+
+    if (user?.full_name) return user.full_name;
+    if (user?.username) return user.username;
+  }
+
+  return (
+    movement.user_name ||
+    movement.mysim_user_name ||
+    "User not found"
+  );
+}
+
+function detectedAisleName(
+  movement: MovementOut,
+  locationMap: Record<number, LocationOut>
+) {
+  if (movement.aisle_name) return movement.aisle_name;
+  if (movement.aisle_code) return movement.aisle_code;
+
+  if (movement.detected_aisle_id != null) {
+    const aisleLocation = locationMap[movement.detected_aisle_id];
+
+    if (aisleLocation?.name) return aisleLocation.name;
+    if (aisleLocation?.code) return aisleLocation.code;
+  }
+
+  return movement.detected_aisle_id == null
+    ? "Not detected"
+    : "Aisle not found";
 }
 
 function movementTypeLabel(mt?: MovementTypeOut) {
@@ -162,6 +232,7 @@ export default function MovementsPage() {
   const [locationMap, setLocationMap] = useState<Record<number, LocationOut>>(
     {}
   );
+  const [itemMap, setItemMap] = useState<Record<number, ItemOut>>({});
 
   const [pageSize] = useState(25);
 
@@ -292,6 +363,41 @@ export default function MovementsPage() {
     }
   }
 
+  async function loadItemMap() {
+    try {
+      const pageSize = 200;
+      let currentPage = 1;
+      let totalPages = 1;
+      const map: Record<number, ItemOut> = {};
+
+      while (currentPage <= totalPages) {
+        const { data, meta } = await apiGet<PageOut<ItemOut>>("/api/items", {
+          include_inactive: true,
+          page: currentPage,
+          page_size: pageSize,
+        });
+
+        for (const item of data.items) {
+          map[item.id] = item;
+        }
+
+        totalPages =
+          meta.pages && meta.pages > 0
+            ? meta.pages
+            : Math.max(
+                1,
+                Math.ceil((meta.total || 0) / (meta.pageSize || pageSize))
+              );
+
+        currentPage += 1;
+      }
+
+      setItemMap(map);
+    } catch {
+      setItemMap({});
+    }
+  }
+
   function movementTypeFilterId() {
     const search = movementTypeFilter.trim().toLowerCase();
 
@@ -343,6 +449,7 @@ export default function MovementsPage() {
       await loadMovementTypes();
       await loadAllLocations();
       await loadUserMap();
+      await loadItemMap();
       await load(1);
     })();
 
@@ -454,7 +561,7 @@ export default function MovementsPage() {
                   ].map((h) => (
                     <th
                       key={h || "details"}
-                      className="sticky top-0 z-30 whitespace-nowrap border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-left text-sm font-semibold text-zinc-700"
+                      className="sticky top-0 z-30 whitespace-nowrap border-b border-blue-950 bg-blue-950 px-3 py-2 text-left text-sm font-semibold text-white"
                     >
                       {h}
                     </th>
@@ -689,46 +796,52 @@ export default function MovementsPage() {
 
                                 <div>
                                   <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
-                                    Destination ID
+                                    Destination
                                   </div>
                                   <div className="mt-1 font-medium text-zinc-900">
-                                    {m.to_location_id ?? "Not set"}
+                                    {resolvedLocationName(
+                                      m.to_location_id,
+                                      locationMap
+                                    )}
                                   </div>
                                 </div>
 
                                 <div>
                                   <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
-                                    Source ID
+                                    Source
                                   </div>
                                   <div className="mt-1 font-medium text-zinc-900">
-                                    {m.from_location_id ?? "Not set"}
+                                    {resolvedLocationName(
+                                      m.from_location_id,
+                                      locationMap
+                                    )}
                                   </div>
                                 </div>
 
                                 <div>
                                   <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
-                                    Internal item ID
+                                    Internal item
                                   </div>
                                   <div className="mt-1 font-medium text-zinc-900">
-                                    {m.item_id ?? "Not set"}
+                                    {itemName(m, itemMap)}
                                   </div>
                                 </div>
 
                                 <div>
                                   <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
-                                    User ID
+                                    User
                                   </div>
                                   <div className="mt-1 font-medium text-zinc-900">
-                                    {m.user_id ?? "No user"}
+                                    {userFullName(m, userMap)}
                                   </div>
                                 </div>
 
                                 <div>
                                   <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
-                                    Detected aisle ID
+                                    Detected aisle
                                   </div>
                                   <div className="mt-1 font-medium text-zinc-900">
-                                    {m.detected_aisle_id ?? "Not detected"}
+                                    {detectedAisleName(m, locationMap)}
                                   </div>
                                 </div>
                               </div>

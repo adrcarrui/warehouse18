@@ -53,6 +53,7 @@ from warehouse18.presentation.api.routes.alert_emails import router as alert_ema
 from warehouse18.presentation.api.routes.alerts import router as alerts_router
 from warehouse18.presentation.api.routes.inventory import router as inventory_router
 from warehouse18.presentation.api.routes.handheld_inventory import router as handheld_inventory_router
+from warehouse18.presentation.api.routes.mysim_parts import router as mysim_parts_router
 
 
 app = FastAPI(
@@ -98,6 +99,7 @@ app.include_router(alert_emails_router, prefix=settings.api_prefix)
 app.include_router(alerts_router, prefix=settings.api_prefix)
 app.include_router(inventory_router, prefix=settings.api_prefix)
 app.include_router(handheld_inventory_router, prefix=settings.api_prefix)
+app.include_router(mysim_parts_router, prefix=settings.api_prefix)
 
 app.state.settings_service = SettingsService(ttl_seconds=2)
 
