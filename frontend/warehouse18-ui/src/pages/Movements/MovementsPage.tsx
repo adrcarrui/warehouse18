@@ -543,7 +543,7 @@ export default function MovementsPage() {
           </div>
         )}
 
-        <div className="rounded-xl border border-zinc-200 bg-white">
+        <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white">
           <div className="relative max-h-[750px] overflow-auto bg-white">
             <table className="min-w-[1100px] border-separate border-spacing-0 [table-layout:fixed]">
               <thead>
@@ -561,7 +561,7 @@ export default function MovementsPage() {
                   ].map((h) => (
                     <th
                       key={h || "details"}
-                      className="sticky top-0 z-30 whitespace-nowrap border-b border-blue-950 bg-blue-950 px-3 py-2 text-left text-sm font-semibold text-white"
+                      className="sticky top-0 z-30 whitespace-nowrap border-b border-blue-950 bg-blue-950 px-3 py-2 text-left text-sm font-semibold text-white first:rounded-tl-xl last:rounded-tr-xl"
                     >
                       {h}
                     </th>

@@ -306,13 +306,13 @@ export default function AlertsPage() {
           </div>
         </div>
 
-        <div className="rounded-xl border border-zinc-200 bg-white">
-          <div className="flex flex-col gap-3 border-b border-zinc-200 px-4 py-3 xl:flex-row xl:items-center xl:justify-between">
+        <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex flex-col gap-3 border-b border-slate-200 px-4 py-3 xl:flex-row xl:items-center xl:justify-between">
             <div>
-              <div className="text-sm font-semibold text-zinc-900">
+              <div className="text-sm font-semibold text-slate-900">
                 Alert log
               </div>
-              <div className="text-sm text-zinc-500">
+              <div className="text-sm text-slate-500">
                 Incidents detected by RFID, manual review, synchronization or
                 system checks.
               </div>
@@ -324,7 +324,7 @@ export default function AlertsPage() {
                 onChange={(event) =>
                   setStatusFilter(event.target.value as "all" | AlertStatus)
                 }
-                className="h-10 rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900"
+                className="h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-900 outline-none transition focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-100"
               >
                 <option value="all">All statuses</option>
                 <option value="open">Open</option>
@@ -340,7 +340,7 @@ export default function AlertsPage() {
                     event.target.value as "all" | AlertSeverity
                   )
                 }
-                className="h-10 rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900"
+                className="h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-900 outline-none transition focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-100"
               >
                 <option value="all">All severities</option>
                 <option value="critical">Critical</option>
@@ -351,7 +351,7 @@ export default function AlertsPage() {
               <select
                 value={sourceFilter}
                 onChange={(event) => setSourceFilter(event.target.value)}
-                className="h-10 rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900"
+                className="h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-900 outline-none transition focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-100"
               >
                 <option value="all">All sources</option>
                 {availableSources.map((source) => (
@@ -375,10 +375,22 @@ export default function AlertsPage() {
             </div>
           </div>
 
-          <div className="relative max-h-[750px] overflow-auto bg-white">
-            <table className="min-w-[1300px] border-separate border-spacing-0 [table-layout:fixed]">
-              <thead>
-                <tr>
+          <div className="m-4 max-h-[750px] overflow-auto rounded-xl border border-slate-200">
+            <table className="w-full table-fixed text-xs">
+              <colgroup>
+                <col className="w-[80px]" />
+                <col className="w-[330px]" />
+                <col className="w-[130px]" />
+                <col className="w-[115px]" />
+                <col className="w-[130px]" />
+                <col className="w-[170px]" />
+                <col className="w-[160px]" />
+                <col className="w-[160px]" />
+                <col className="w-[130px]" />
+              </colgroup>
+
+              <thead className="sticky top-0 z-20 bg-blue-950">
+                <tr className="text-left text-white">
                   {[
                     "ID",
                     "Alert",
@@ -392,7 +404,7 @@ export default function AlertsPage() {
                   ].map((header) => (
                     <th
                       key={header}
-                      className="sticky top-0 z-30 whitespace-nowrap border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-left text-sm font-semibold text-zinc-700"
+                      className="whitespace-nowrap px-3 py-2.5 text-sm font-semibold first:rounded-tl-xl last:rounded-tr-xl"
                     >
                       {header}
                     </th>
@@ -400,12 +412,12 @@ export default function AlertsPage() {
                 </tr>
               </thead>
 
-              <tbody>
+              <tbody className="divide-y divide-slate-200 bg-white">
                 {loading && (
                   <tr>
                     <td
                       colSpan={9}
-                      className="px-3 py-8 text-center text-sm text-zinc-500"
+                      className="px-4 py-8 text-center text-sm text-slate-500"
                     >
                       Loading alerts...
                     </td>
@@ -416,7 +428,7 @@ export default function AlertsPage() {
                   <tr>
                     <td
                       colSpan={9}
-                      className="px-3 py-8 text-center text-sm text-red-600"
+                      className="px-4 py-8 text-center text-sm text-red-600"
                     >
                       {error}
                     </td>
@@ -426,30 +438,30 @@ export default function AlertsPage() {
                 {!loading &&
                   !error &&
                   filteredAlerts.map((alert) => (
-                    <tr key={alert.id} className="hover:bg-zinc-50">
-                      <td className="border-b border-zinc-100 px-3 py-2 text-center text-sm text-zinc-900">
+                    <tr key={alert.id} className="transition hover:bg-blue-50/60">
+                      <td className="px-3 py-2.5 text-center text-sm text-slate-900">
                         <span className="inline-flex w-fit items-center rounded-full bg-blue-900 px-2 py-1 text-xs font-semibold text-white">
                           #{alert.id}
                         </span>
                       </td>
 
-                      <td className="border-b border-zinc-100 px-3 py-2">
-                        <div className="font-medium text-zinc-900">
+                      <td className="px-3 py-2.5">
+                        <div className="font-medium text-slate-900">
                           {alert.title}
                         </div>
-                        <div className="mt-0.5 text-xs font-medium uppercase tracking-wide text-zinc-400">
+                        <div className="mt-0.5 text-xs font-medium uppercase tracking-wide text-slate-400">
                           {formatCode(alert.code)}
                         </div>
-                        <div className="mt-1 line-clamp-2 text-sm text-zinc-500">
+                        <div className="mt-1 line-clamp-2 text-sm text-slate-500">
                           {alert.message}
                         </div>
                       </td>
 
-                      <td className="border-b border-zinc-100 px-3 py-2 text-center text-sm text-zinc-900">
+                      <td className="px-3 py-2.5 text-center text-sm text-slate-900">
                         {alert.source}
                       </td>
 
-                      <td className="border-b border-zinc-100 px-3 py-2 text-center">
+                      <td className="px-3 py-2.5 text-center">
                         <span
                           className={`inline-flex rounded-full border px-2 py-1 text-xs font-semibold ${severityClass(
                             alert.severity
@@ -459,7 +471,7 @@ export default function AlertsPage() {
                         </span>
                       </td>
 
-                      <td className="border-b border-zinc-100 px-3 py-2 text-center">
+                      <td className="px-3 py-2.5 text-center">
                         <span
                           className={`inline-flex rounded-full border px-2 py-1 text-xs font-semibold ${statusClass(
                             alert.status
@@ -469,21 +481,21 @@ export default function AlertsPage() {
                         </span>
                       </td>
 
-                      <td className="border-b border-zinc-100 px-3 py-2 text-center text-sm text-zinc-900">
+                      <td className="px-3 py-2.5 text-center text-sm text-slate-900">
                         {formatEntity(alert)}
                       </td>
 
-                      <td className="border-b border-zinc-100 px-3 py-2 text-center text-sm text-zinc-600">
+                      <td className="px-3 py-2.5 text-center text-sm text-slate-600">
                         {formatDate(alert.createdAt)}
                       </td>
 
-                      <td className="border-b border-zinc-100 px-3 py-2 text-center text-sm text-zinc-600">
+                      <td className="px-3 py-2.5 text-center text-sm text-slate-600">
                         {formatDate(alert.resolvedAt)}
                       </td>
 
-                      <td className="border-b border-zinc-100 px-3 py-2">
-                        <div className="flex justify-center gap-2">
-                          <Button type="button" variant="outline">
+                      <td className="px-3 py-2.5">
+                        <div className="flex flex-col items-stretch gap-1.5">
+                          <Button type="button" variant="outline" className="h-8 w-full justify-center px-2 text-xs">
                             <Eye className="mr-1 h-4 w-4" />
                             View
                           </Button>
@@ -491,6 +503,7 @@ export default function AlertsPage() {
                           <Button
                             type="button"
                             variant="outline"
+                            className="h-8 w-full justify-center px-2 text-xs"
                             disabled={alert.status !== "open"}
                             onClick={() => void acknowledgeAlert(alert.id)}
                           >
@@ -499,6 +512,7 @@ export default function AlertsPage() {
 
                           <Button
                             type="button"
+                            className="h-8 w-full justify-center px-2 text-xs"
                             disabled={
                               alert.status === "resolved" ||
                               alert.status === "dismissed"
@@ -516,7 +530,7 @@ export default function AlertsPage() {
                   <tr>
                     <td
                       colSpan={9}
-                      className="px-3 py-8 text-center text-sm text-zinc-500"
+                      className="px-4 py-8 text-center text-sm text-slate-500"
                     >
                       No alerts match the selected filters.
                     </td>

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "../app/AppShell";
 import { apiGet } from "../api";
-import { Table } from "../ui/Table";
+import { jsPDF } from "jspdf";
+import { autoTable } from "jspdf-autotable";
 
 const API_BASE = "/api";
 const PAGE_SIZE = 5;
@@ -69,6 +70,31 @@ function getLocationName(locationLabel?: string | null) {
   );
 }
 
+function sanitizeFileName(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase();
+}
+
+function formatPdfDate(value: string) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "unknown-date";
+  }
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+
+  return `${year}-${month}-${day}_${hours}-${minutes}`;
+}
+
 function StatusPill({ status }: { status: "OK" | "PENDING" }) {
   const className =
     status === "OK"
@@ -90,6 +116,7 @@ export default function HandheldInventorySubmitsPage() {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [page, setPage] = useState(1);
+  const [exportingAuditId, setExportingAuditId] = useState<number | null>(null);
 
   async function loadList() {
     setLoading(true);
@@ -146,6 +173,89 @@ export default function HandheldInventorySubmitsPage() {
     }
   }
 
+  async function downloadPdf(auditId: number) {
+    if (!auditId) {
+      setError("Invalid audit id.");
+      return;
+    }
+
+    setExportingAuditId(auditId);
+    setError(null);
+
+    try {
+      const { data } = await apiGet<SubmitDetail>(
+        `${API_BASE}/handheld-inventory-submits/${auditId}`
+      );
+
+      const detail: SubmitDetail = {
+        ...data,
+        audit_id: normalizeAuditId(data),
+        rows: data.rows ?? [],
+      };
+
+      const locationName = getLocationName(detail.location_label);
+      const document = new jsPDF({
+        orientation: "portrait",
+        unit: "mm",
+        format: "a4",
+      });
+
+      document.setFontSize(18);
+      document.text("Handheld Inventory", 14, 18);
+
+      document.setFontSize(10);
+      document.text(`Submitted: ${formatDateTime(detail.at)}`, 14, 27);
+      document.text(`Location: ${locationName}`, 14, 33);
+      document.text(`Reader: ${detail.reader_id || "—"}`, 14, 39);
+      document.text(
+        `Total: ${detail.total_items}   OK: ${detail.ok_items}   Pending: ${detail.pending_items}`,
+        14,
+        45
+      );
+
+      autoTable(document, {
+        startY: 52,
+        head: [["Item", "Reads", "Status"]],
+        body: detail.rows.map((row) => [
+          row.item_code,
+          String(row.reads),
+          row.status,
+        ]),
+        styles: {
+          fontSize: 9,
+          cellPadding: 2.5,
+        },
+        headStyles: {
+          fillColor: [30, 41, 59],
+          textColor: [255, 255, 255],
+        },
+        alternateRowStyles: {
+          fillColor: [248, 250, 252],
+        },
+        columnStyles: {
+          1: { halign: "center", cellWidth: 25 },
+          2: { halign: "center", cellWidth: 30 },
+        },
+        margin: {
+          left: 14,
+          right: 14,
+        },
+      });
+
+      const safeLocation =
+        sanitizeFileName(locationName) || `location-${detail.location_id}`;
+
+      document.save(
+        `handheld-inventory-${safeLocation}-${formatPdfDate(detail.at)}.pdf`
+      );
+    } catch (ex: any) {
+      console.error("Error exporting handheld inventory PDF", ex);
+      setError(ex?.message ?? "Error exporting handheld inventory PDF");
+    } finally {
+      setExportingAuditId(null);
+    }
+  }
+
   useEffect(() => {
     loadList();
   }, []);
@@ -182,27 +292,7 @@ export default function HandheldInventorySubmitsPage() {
   const pageStart = (currentPage - 1) * PAGE_SIZE;
   const visibleItems = filteredItems.slice(pageStart, pageStart + PAGE_SIZE);
 
-  const sessionRows = visibleItems.map((item) => [
-    formatDateTime(item.at),
-    getLocationName(item.location_label),
-    item.reader_id || "",
-    item.total_items,
-    <span className="font-semibold text-emerald-700">{item.ok_items}</span>,
-    <span className="font-semibold text-orange-700">{item.pending_items}</span>,
-    <button
-      type="button"
-      onClick={() => loadDetail(item.audit_id)}
-      className="rounded-lg border border-zinc-300 px-3 py-1 text-sm font-medium hover:bg-zinc-50"
-    >
-      View
-    </button>,
-  ]);
 
-  const detailRows = (selected?.rows ?? []).map((row) => [
-    row.item_code,
-    row.reads,
-    <StatusPill status={row.status} />,
-  ]);
 
   return (
     <AppShell
@@ -228,10 +318,10 @@ export default function HandheldInventorySubmitsPage() {
 
         <section className="space-y-3">
           <div>
-            <h2 className="text-lg font-semibold text-zinc-900">
+            <h2 className="text-lg font-semibold text-slate-900">
               Submitted lists
             </h2>
-            <p className="text-sm text-zinc-500">
+            <p className="text-sm text-slate-500">
               Each row is one list sent from the Zebra app after pressing ✓.
             </p>
           </div>
@@ -247,32 +337,126 @@ export default function HandheldInventorySubmitsPage() {
                 value={filter}
                 onChange={(event) => setFilter(event.target.value)}
                 placeholder="Filter by date, location, reader or totals..."
-                className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none placeholder:text-zinc-400 focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+                className="h-9 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-100"
               />
             </div>
-
-            <p className="text-sm text-zinc-500">
-              {filteredItems.length} submission
-              {filteredItems.length === 1 ? "" : "s"}
-            </p>
           </div>
 
-          <Table
-            headers={[
-              "Date",
-              "Location",
-              "Reader",
-              "Total",
-              "Ok",
-              "Pending",
-              "",
-            ]}
-            rows={sessionRows}
-          />
+          <div className="overflow-auto rounded-xl border border-slate-200">
+            <table className="w-full min-w-[860px] table-fixed text-xs">
+              <colgroup>
+                <col className="w-[155px]" />
+                <col className="w-[190px]" />
+                <col className="w-[135px]" />
+                <col className="w-[70px]" />
+                <col className="w-[70px]" />
+                <col className="w-[80px]" />
+                <col className="w-[112px]" />
+              </colgroup>
+
+              <thead className="sticky top-0 z-10 bg-blue-950">
+                <tr className="text-left text-white">
+                  <th className="px-3 py-2.5 font-semibold">Date</th>
+                  <th className="px-2 py-2.5 font-semibold">Location</th>
+                  <th className="px-2 py-2.5 font-semibold">Reader</th>
+                  <th className="px-2 py-2.5 text-center font-semibold">
+                    Total
+                  </th>
+                  <th className="px-2 py-2.5 text-center font-semibold">OK</th>
+                  <th className="px-2 py-2.5 text-center font-semibold">
+                    Pending
+                  </th>
+                  <th className="px-2 py-2.5 text-right font-semibold">
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+
+              <tbody className="divide-y divide-slate-200 bg-white">
+                {visibleItems.map((item) => (
+                  <tr
+                    key={item.audit_id}
+                    className="transition hover:bg-blue-50/60"
+                  >
+                    <td
+                      className="truncate whitespace-nowrap px-3 py-2.5 text-slate-600"
+                      title={formatDateTime(item.at)}
+                    >
+                      {formatDateTime(item.at)}
+                    </td>
+                    <td
+                      className="truncate px-2 py-2.5 font-medium text-slate-900"
+                      title={getLocationName(item.location_label)}
+                    >
+                      {getLocationName(item.location_label)}
+                    </td>
+                    <td
+                      className="truncate px-2 py-2.5 text-slate-600"
+                      title={item.reader_id || "—"}
+                    >
+                      {item.reader_id || "—"}
+                    </td>
+                    <td className="px-2 py-2.5 text-center font-semibold text-slate-900">
+                      {item.total_items}
+                    </td>
+                    <td className="px-2 py-2.5 text-center font-semibold text-emerald-700">
+                      {item.ok_items}
+                    </td>
+                    <td className="px-2 py-2.5 text-center font-semibold text-orange-700">
+                      {item.pending_items}
+                    </td>
+                    <td className="px-2 py-2 text-right">
+                      <div className="flex items-center justify-end gap-1 whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => void loadDetail(item.audit_id)}
+                          className="inline-flex h-7 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
+                        >
+                          View
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void downloadPdf(item.audit_id)}
+                          disabled={exportingAuditId === item.audit_id}
+                          className="inline-flex h-7 items-center justify-center rounded-lg border border-blue-200 bg-blue-50 px-2 text-xs font-medium text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {exportingAuditId === item.audit_id
+                            ? "..."
+                            : "PDF"}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+
+                {!loading && visibleItems.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={7}
+                      className="px-3 py-12 text-center text-slate-400"
+                    >
+                      No submitted lists match this search.
+                    </td>
+                  </tr>
+                ) : null}
+
+                {loading ? (
+                  <tr>
+                    <td
+                      colSpan={7}
+                      className="px-3 py-12 text-center text-slate-400"
+                    >
+                      Loading submitted lists…
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
 
           {filteredItems.length > PAGE_SIZE ? (
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-sm text-zinc-500">
+              <p className="text-sm text-slate-500">
                 Showing {pageStart + 1}–
                 {Math.min(pageStart + PAGE_SIZE, filteredItems.length)} of {" "}
                 {filteredItems.length}
@@ -283,11 +467,11 @@ export default function HandheldInventorySubmitsPage() {
                   type="button"
                   onClick={() => setPage(Math.max(1, currentPage - 1))}
                   disabled={currentPage === 1}
-                  className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex h-9 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-800 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Previous
                 </button>
-                <span className="min-w-24 text-center text-sm text-zinc-600">
+                <span className="min-w-24 text-center text-sm text-slate-600">
                   Page {currentPage} of {totalPages}
                 </span>
                 <button
@@ -296,7 +480,7 @@ export default function HandheldInventorySubmitsPage() {
                     setPage(Math.min(totalPages, currentPage + 1))
                   }
                   disabled={currentPage === totalPages}
-                  className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex h-9 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-800 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Next
                 </button>
@@ -306,26 +490,108 @@ export default function HandheldInventorySubmitsPage() {
         </section>
 
         <section className="space-y-3">
-          <div>
-            <h2 className="text-lg font-semibold text-zinc-900">
-              Selected list
-            </h2>
-            <p className="text-sm text-zinc-500">
-              {selected
-                ? `${formatDateTime(selected.at)} · ${
-                    selected.location_label || "—"
-                  }`
-                : "Select a submitted list to see the item status."}
-            </p>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">
+                Selected list
+              </h2>
+              <p className="text-sm text-slate-500">
+                {selected
+                  ? `${formatDateTime(selected.at)} · ${getLocationName(
+                      selected.location_label
+                    )}`
+                  : "Select a submitted list to see the item status."}
+              </p>
+            </div>
+
+            {selected ? (
+              <button
+                type="button"
+                onClick={() => void downloadPdf(selected.audit_id)}
+                disabled={exportingAuditId === selected.audit_id}
+                className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {exportingAuditId === selected.audit_id
+                  ? "Exporting PDF..."
+                  : "Download PDF"}
+              </button>
+            ) : null}
           </div>
 
-          {detailLoading ? (
-            <div className="rounded-xl border border-zinc-200 bg-white px-4 py-6 text-sm text-zinc-500">
-              Loading detail...
-            </div>
-          ) : (
-            <Table headers={["Item", "Reads", "Status"]} rows={detailRows} />
-          )}
+          <div className="overflow-auto rounded-xl border border-slate-200">
+            <table className="w-full min-w-[520px] table-fixed text-xs">
+              <colgroup>
+                <col />
+                <col className="w-[100px]" />
+                <col className="w-[125px]" />
+              </colgroup>
+
+              <thead className="sticky top-0 z-10 bg-blue-950">
+                <tr className="text-left text-white">
+                  <th className="px-3 py-2.5 font-semibold">Item</th>
+                  <th className="px-2 py-2.5 text-center font-semibold">
+                    Reads
+                  </th>
+                  <th className="px-2 py-2.5 text-center font-semibold">
+                    Status
+                  </th>
+                </tr>
+              </thead>
+
+              <tbody className="divide-y divide-slate-200 bg-white">
+                {detailLoading ? (
+                  <tr>
+                    <td
+                      colSpan={3}
+                      className="px-3 py-12 text-center text-slate-400"
+                    >
+                      Loading detail…
+                    </td>
+                  </tr>
+                ) : selected ? (
+                  selected.rows.length > 0 ? (
+                    selected.rows.map((row, index) => (
+                      <tr
+                        key={`${row.item_code}-${index}`}
+                        className="transition hover:bg-blue-50/60"
+                      >
+                        <td
+                          className="truncate px-3 py-2.5 font-medium text-slate-900"
+                          title={row.item_code}
+                        >
+                          {row.item_code}
+                        </td>
+                        <td className="px-2 py-2.5 text-center text-slate-600">
+                          {row.reads}
+                        </td>
+                        <td className="px-2 py-2.5 text-center">
+                          <StatusPill status={row.status} />
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td
+                        colSpan={3}
+                        className="px-3 py-12 text-center text-slate-400"
+                      >
+                        This submitted list contains no items.
+                      </td>
+                    </tr>
+                  )
+                ) : (
+                  <tr>
+                    <td
+                      colSpan={3}
+                      className="px-3 py-12 text-center text-slate-400"
+                    >
+                      Select a submitted list to see its items.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </section>
       </div>
     </AppShell>
