@@ -7,6 +7,14 @@ import { Input } from "../ui/Input";
 import { PartBarcodeGenerator } from "../ui/PartBarcodeGenerator";
 import { WarehouseMapReal } from "../ui/WarehouseMapReal";
 
+type LocationPage = {
+  items: LocationOut[];
+  page: number;
+  page_size: number;
+  total: number;
+  pages: number;
+};
+
 type ItemLocationOut = {
   item_key: string;
   found: boolean;
@@ -18,10 +26,12 @@ type ItemLocationOut = {
 
   source_location?: number | null;
   source_location_name?: string | null;
+  source_aisle_id?: number | null;
 
   destination_location?: number | null;
   destination_location_name?: string | null;
   destination_location_label?: string | null;
+  destination_aisle_id?: number | null;
 
   done_by?: number | null;
   done_by_name?: string | null;
@@ -34,6 +44,7 @@ type LocationOut = {
   id: number;
   code?: string | null;
   name?: string | null;
+  aisle_id?: number | null;
 };
 
 function fmtDate(value?: string | null) {
@@ -87,29 +98,37 @@ function validLocationName(
   return normalizedValue;
 }
 
-async function resolveLocationName(
-  locationId: number | null | undefined,
-  currentName?: string | null,
-) {
-  const suppliedName = validLocationName(
-    currentName,
-    locationId,
-  );
+async function resolveLocation(
+  locationCode: number | null | undefined,
+): Promise<LocationOut | null> {
+  if (locationCode == null) {
+    return null;
+  }
 
-  if (suppliedName) return suppliedName;
-  if (locationId == null) return null;
+  const code = String(locationCode);
 
   try {
-    const { data } = await apiGet<LocationOut>(
-      `/api/locations/${locationId}`,
+    const { data } = await apiGet<LocationPage>(
+      "/api/locations/",
+      {
+        q: code,
+        page: 1,
+        page_size: 50,
+      },
     );
 
     return (
-      validLocationName(data.name, locationId) ||
-      validLocationName(data.code, locationId) ||
-      null
+      (data.items ?? []).find(
+        (location) =>
+          String(location.code ?? "").trim() === code,
+      ) ?? null
     );
-  } catch {
+  } catch (error) {
+    console.error(
+      `Could not resolve location ${code}`,
+      error,
+    );
+
     return null;
   }
 }
@@ -213,24 +232,36 @@ export default function ItemLocationPage() {
           },
         );
 
-      const [sourceLocationName, destinationLocationName] =
+      const [sourceLocation, destinationLocation] =
         await Promise.all([
-          resolveLocationName(
-            data.source_location,
-            data.source_location_name,
-          ),
-          resolveLocationName(
-            data.destination_location,
-            data.destination_location_name ||
-              data.destination_location_label,
-          ),
+          resolveLocation(data.source_location),
+          resolveLocation(data.destination_location),
         ]);
 
       setResult({
         ...data,
-        source_location_name: sourceLocationName,
-        destination_location_name: destinationLocationName,
-        destination_location_label: destinationLocationName,
+        source_location_name:
+            sourceLocation?.name ||
+            data.source_location_name ||
+            null,
+
+          source_aisle_id:
+            sourceLocation?.aisle_id ?? null,
+
+          destination_location_name:
+            destinationLocation?.name ||
+            data.destination_location_name ||
+            data.destination_location_label ||
+            null,
+
+          destination_location_label:
+            destinationLocation?.name ||
+            data.destination_location_name ||
+            data.destination_location_label ||
+            null,
+
+          destination_aisle_id:
+            destinationLocation?.aisle_id ?? null,
       });
 
       /*
@@ -253,11 +284,8 @@ export default function ItemLocationPage() {
     }
   }
 
-  const activeAisle = extractAisleNumber(
-    result?.destination_location_name ||
-      result?.destination_location_label ||
-      null,
-  );
+  const activeAisle =
+    result?.destination_aisle_id ?? null;
 
   return (
     <AppShell
