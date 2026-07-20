@@ -30,6 +30,12 @@ type ItemLocationOut = {
   raw?: Record<string, unknown> | null;
 };
 
+type LocationOut = {
+  id: number;
+  code?: string | null;
+  name?: string | null;
+};
+
 function fmtDate(value?: string | null) {
   if (!value) return "—";
 
@@ -40,6 +46,72 @@ function fmtDate(value?: string | null) {
   }
 
   return date.toLocaleString("en-GB");
+}
+
+function parsePartDbId(value: string): number | null {
+  const normalizedValue = value.trim();
+
+  if (!normalizedValue) return null;
+
+  /*
+   * Acepta tanto el ID interno (15922) como el código
+   * completo del part (CN235-015922).
+   */
+  const fullPartCodeMatch = normalizedValue.match(/-(\d+)$/);
+  const numericValue = fullPartCodeMatch?.[1] || normalizedValue;
+
+  if (!/^\d+$/.test(numericValue)) return null;
+
+  const partDbId = Number(numericValue);
+
+  return Number.isSafeInteger(partDbId) && partDbId > 0
+    ? partDbId
+    : null;
+}
+
+function validLocationName(
+  value: string | null | undefined,
+  locationId: number | null | undefined,
+) {
+  const normalizedValue = value?.trim();
+
+  if (!normalizedValue) return null;
+
+  if (
+    locationId != null &&
+    normalizedValue === String(locationId)
+  ) {
+    return null;
+  }
+
+  return normalizedValue;
+}
+
+async function resolveLocationName(
+  locationId: number | null | undefined,
+  currentName?: string | null,
+) {
+  const suppliedName = validLocationName(
+    currentName,
+    locationId,
+  );
+
+  if (suppliedName) return suppliedName;
+  if (locationId == null) return null;
+
+  try {
+    const { data } = await apiGet<LocationOut>(
+      `/api/locations/${locationId}`,
+    );
+
+    return (
+      validLocationName(data.name, locationId) ||
+      validLocationName(data.code, locationId) ||
+      null
+    );
+  } catch {
+    return null;
+  }
 }
 
 /*
@@ -116,14 +188,11 @@ export default function ItemLocationPage() {
       return;
     }
 
-    const numericPartId = Number(rawPartId);
+    const numericPartId = parsePartDbId(rawPartId);
 
-    if (
-      !Number.isInteger(numericPartId) ||
-      numericPartId <= 0
-    ) {
+    if (numericPartId == null) {
       setErr(
-        "Part ID must be a positive integer",
+        "Enter a valid Part DB ID or a complete part code, for example 15922 or CN235-015922",
       );
       setResult(null);
       setSearchedPartDbId("");
@@ -144,7 +213,25 @@ export default function ItemLocationPage() {
           },
         );
 
-      setResult(data);
+      const [sourceLocationName, destinationLocationName] =
+        await Promise.all([
+          resolveLocationName(
+            data.source_location,
+            data.source_location_name,
+          ),
+          resolveLocationName(
+            data.destination_location,
+            data.destination_location_name ||
+              data.destination_location_label,
+          ),
+        ]);
+
+      setResult({
+        ...data,
+        source_location_name: sourceLocationName,
+        destination_location_name: destinationLocationName,
+        destination_location_label: destinationLocationName,
+      });
 
       /*
        * Activa el generador después de completar
@@ -189,18 +276,38 @@ export default function ItemLocationPage() {
         {/* SEARCH */}
 
         <div className="rounded-xl border border-zinc-200 bg-white p-4">
+          <div className="mb-4">
+            <div className="text-base font-semibold text-zinc-900">
+              Find an item's current location
+            </div>
+
+            <p className="mt-1 text-sm text-zinc-600">
+              Enter the internal mySim Part DB ID or paste the complete part
+              code. The numeric ID will be extracted automatically.
+            </p>
+
+            <div className="mt-3 inline-flex flex-wrap items-center gap-2 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm">
+              <span className="font-medium text-zinc-700">
+                Complete part code
+              </span>
+              <span className="font-semibold text-blue-950">
+                CN235-015922
+              </span>
+              <span className="text-zinc-400">→</span>
+              <span className="font-medium text-zinc-700">
+                Part DB ID
+              </span>
+              <span className="font-semibold text-blue-950">15922</span>
+            </div>
+          </div>
+
           <div className="flex gap-2">
             <Input
               value={partId}
-              inputMode="numeric"
               autoComplete="off"
-              placeholder="Part DB ID, e.g. 15922"
+              placeholder="Enter 15922 or CN235-015922"
               onChange={(event) => {
-                const value =
-                  event.target.value.replace(
-                    /\D/g,
-                    "",
-                  );
+                const value = event.target.value;
 
                 setPartId(value);
 
@@ -267,8 +374,7 @@ export default function ItemLocationPage() {
           <div className="mt-1 text-2xl font-bold text-blue-700">
             {result.destination_location_name ||
               result.destination_location_label ||
-              result.destination_location ||
-              "Unknown"}
+              "Location name unavailable"}
           </div>
         </div>
       )}
@@ -359,8 +465,7 @@ export default function ItemLocationPage() {
 
                     <div className="text-sm font-medium text-zinc-900">
                       {result.source_location_name ||
-                        result.source_location ||
-                        "—"}
+                        "Location name unavailable"}
                     </div>
                   </div>
 
@@ -372,8 +477,7 @@ export default function ItemLocationPage() {
                     <div className="text-sm font-medium text-zinc-900">
                       {result.destination_location_name ||
                         result.destination_location_label ||
-                        result.destination_location ||
-                        "—"}
+                        "Location name unavailable"}
                     </div>
                   </div>
                 </div>

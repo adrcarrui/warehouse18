@@ -721,7 +721,7 @@ function RecentMovementsTable(props: {
               ? `${matchingMovements.length} matching movement${
                   matchingMovements.length === 1 ? "" : "s"
                 }`
-                  : ""}
+                  : "Up to eight recent records"}
           </div>
         </div>
 
@@ -913,15 +913,29 @@ export default function DashboardPage() {
   const requestedLocationIds = useRef<Set<number>>(new Set());
   const invalidRange = !from || !to || from > to;
 
-  async function loadMetrics() {
-    if (invalidRange) return;
+  async function loadMetrics(
+    range?: { from: string; to: string },
+  ) {
+    const selectedFrom = range?.from ?? from;
+    const selectedTo = range?.to ?? to;
+
+    if (
+      !selectedFrom ||
+      !selectedTo ||
+      selectedFrom > selectedTo
+    ) {
+      return;
+    }
 
     const currentRequest = ++requestId.current;
     setLoading(true);
     setError(null);
 
     try {
-      const { fromDate, toDate } = rangeToIso(from, to);
+      const { fromDate, toDate } = rangeToIso(
+        selectedFrom,
+        selectedTo,
+      );
 
       const firstPagePromise = apiGet<PageOut<MovementOut>>(
         "/api/movements",
@@ -1234,6 +1248,7 @@ export default function DashboardPage() {
     setPreset(nextPreset);
     setFrom(nextRange.from);
     setTo(nextRange.to);
+    void loadMetrics(nextRange);
   }
 
   const metrics = useMemo(() => {
@@ -1431,7 +1446,7 @@ export default function DashboardPage() {
 
               <Button
                 type="button"
-                onClick={loadMetrics}
+                onClick={() => void loadMetrics()}
                 disabled={loading || invalidRange}
                 className="bg-blue-950 hover:bg-blue-900"
               >

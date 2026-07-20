@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "../app/AppShell";
 import { apiGet } from "../api";
 import { Table } from "../ui/Table";
 
 const API_BASE = "/api";
+const PAGE_SIZE = 5;
 
 type SubmitSummary = {
   audit_id: number;
@@ -55,6 +56,19 @@ function formatDateTime(value: string) {
   });
 }
 
+function getLocationName(locationLabel?: string | null) {
+  if (!locationLabel) {
+    return "—";
+  }
+
+  return (
+    locationLabel
+      .trim()
+      .replace(/^\d+\s*[-–—:]\s*/, "")
+      .trim() || "—"
+  );
+}
+
 function StatusPill({ status }: { status: "OK" | "PENDING" }) {
   const className =
     status === "OK"
@@ -74,6 +88,8 @@ export default function HandheldInventorySubmitsPage() {
   const [loading, setLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
+  const [page, setPage] = useState(1);
 
   async function loadList() {
     setLoading(true);
@@ -94,6 +110,7 @@ export default function HandheldInventorySubmitsPage() {
       }));
 
       setItems(normalizedItems);
+      setPage(1);
     } catch (ex: any) {
       console.error("Error loading handheld inventory submits", ex);
       setError(ex?.message ?? "Error loading handheld inventory submits");
@@ -133,9 +150,41 @@ export default function HandheldInventorySubmitsPage() {
     loadList();
   }, []);
 
-  const sessionRows = items.map((item) => [
+  useEffect(() => {
+    setPage(1);
+  }, [filter]);
+
+  const filteredItems = useMemo(() => {
+    const normalizedFilter = filter.trim().toLocaleLowerCase("es-ES");
+
+    if (!normalizedFilter) {
+      return items;
+    }
+
+    return items.filter((item) => {
+      const searchableValues = [
+        formatDateTime(item.at),
+        item.location_label ?? "",
+        item.reader_id ?? "",
+        String(item.total_items),
+        String(item.ok_items),
+        String(item.pending_items),
+      ];
+
+      return searchableValues.some((value) =>
+        value.toLocaleLowerCase("es-ES").includes(normalizedFilter)
+      );
+    });
+  }, [filter, items]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredItems.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pageStart = (currentPage - 1) * PAGE_SIZE;
+  const visibleItems = filteredItems.slice(pageStart, pageStart + PAGE_SIZE);
+
+  const sessionRows = visibleItems.map((item) => [
     formatDateTime(item.at),
-    item.location_label || `Location ${item.location_id}`,
+    getLocationName(item.location_label),
     item.reader_id || "",
     item.total_items,
     <span className="font-semibold text-emerald-700">{item.ok_items}</span>,
@@ -187,6 +236,27 @@ export default function HandheldInventorySubmitsPage() {
             </p>
           </div>
 
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="w-full sm:max-w-md">
+              <label htmlFor="handheld-submit-filter" className="sr-only">
+                Filter submitted lists
+              </label>
+              <input
+                id="handheld-submit-filter"
+                type="search"
+                value={filter}
+                onChange={(event) => setFilter(event.target.value)}
+                placeholder="Filter by date, location, reader or totals..."
+                className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none placeholder:text-zinc-400 focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+              />
+            </div>
+
+            <p className="text-sm text-zinc-500">
+              {filteredItems.length} submission
+              {filteredItems.length === 1 ? "" : "s"}
+            </p>
+          </div>
+
           <Table
             headers={[
               "Date",
@@ -199,6 +269,40 @@ export default function HandheldInventorySubmitsPage() {
             ]}
             rows={sessionRows}
           />
+
+          {filteredItems.length > PAGE_SIZE ? (
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm text-zinc-500">
+                Showing {pageStart + 1}–
+                {Math.min(pageStart + PAGE_SIZE, filteredItems.length)} of {" "}
+                {filteredItems.length}
+              </p>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPage(Math.max(1, currentPage - 1))}
+                  disabled={currentPage === 1}
+                  className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Previous
+                </button>
+                <span className="min-w-24 text-center text-sm text-zinc-600">
+                  Page {currentPage} of {totalPages}
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPage(Math.min(totalPages, currentPage + 1))
+                  }
+                  disabled={currentPage === totalPages}
+                  className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          ) : null}
         </section>
 
         <section className="space-y-3">
@@ -209,7 +313,7 @@ export default function HandheldInventorySubmitsPage() {
             <p className="text-sm text-zinc-500">
               {selected
                 ? `${formatDateTime(selected.at)} · ${
-                    selected.location_label || selected.location_id
+                    selected.location_label || "—"
                   }`
                 : "Select a submitted list to see the item status."}
             </p>
