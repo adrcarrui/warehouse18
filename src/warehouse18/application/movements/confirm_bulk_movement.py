@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from decimal import Decimal
@@ -20,6 +21,21 @@ from warehouse18.domain.models import (
 
 class ConfirmBulkMovementError(ValueError):
     pass
+
+
+VALID_MYSIM_TARGET_SYSTEMS = {"mysim_tests", "mysim_itc"}
+
+
+def get_mysim_target_system() -> str:
+    target_system = os.getenv("MYSIM_TARGET_SYSTEM", "").strip().lower()
+
+    if target_system not in VALID_MYSIM_TARGET_SYSTEMS:
+        raise ConfirmBulkMovementError(
+            "MYSIM_TARGET_SYSTEM must be configured as "
+            "'mysim_tests' or 'mysim_itc'"
+        )
+
+    return target_system
 
 
 @dataclass(frozen=True)
@@ -545,9 +561,11 @@ def _enqueue_bulk_outbox_event(
     movement_type_code: str,
     quantity: Decimal,
 ) -> None:
+    mysim_target_system = get_mysim_target_system()
+
     existing = (
         db.query(IntegrationOutbox)
-        .filter(IntegrationOutbox.target_system == "mysim")
+        .filter(IntegrationOutbox.target_system == mysim_target_system)
         .filter(IntegrationOutbox.entity_type == "container")
         .filter(IntegrationOutbox.entity_id == container.id)
         .filter(IntegrationOutbox.action == "bulk_movement_confirmed")
@@ -562,7 +580,7 @@ def _enqueue_bulk_outbox_event(
     db.add(
         IntegrationOutbox(
             direction="outbound",
-            target_system="mysim",
+            target_system=mysim_target_system,
             entity_type="container",
             entity_id=container.id,
             action="bulk_movement_confirmed",

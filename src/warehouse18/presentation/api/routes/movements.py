@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 import logging
 import json
+import os
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import or_, select, text, Integer, cast, func
 from datetime import datetime, timezone
@@ -61,6 +62,23 @@ MYSIM_SYNC_STATUS_QUEUED = "queued"
 MYSIM_SYNC_STATUS_NOT_SENT = "not_sent"
 
 VALID_MOVEMENT_CODES = {"GI", "GR", "GT"}
+
+VALID_MYSIM_TARGET_SYSTEMS = {"mysim_tests", "mysim_itc"}
+
+
+def get_mysim_target_system() -> str:
+    target_system = os.getenv("MYSIM_TARGET_SYSTEM", "").strip().lower()
+
+    if target_system not in VALID_MYSIM_TARGET_SYSTEMS:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "MYSIM_TARGET_SYSTEM must be configured as "
+                "'mysim_tests' or 'mysim_itc'"
+            ),
+        )
+
+    return target_system
 
 MOVEMENT_TYPE_ALIASES = {
     "GI": "GI",
@@ -1261,13 +1279,15 @@ def confirm_movement(
     db.add(mv)
     db.flush()
 
+    mysim_target_system = get_mysim_target_system()
+
     existing_outbox = db.execute(
         text(
             """
             SELECT id
             FROM integration_outbox
             WHERE direction = 'outbound'
-              AND target_system = 'mysim'
+              AND target_system = :target_system
               AND entity_type = 'movement'
               AND entity_id = :movement_id
               AND action = 'sync'
@@ -1276,7 +1296,10 @@ def confirm_movement(
             LIMIT 1
             """
         ),
-        {"movement_id": mv.id},
+        {
+            "movement_id": mv.id,
+            "target_system": mysim_target_system,
+        },
     ).first()
 
     if existing_outbox is None:
@@ -1296,7 +1319,7 @@ def confirm_movement(
                 )
                 VALUES (
                     'outbound',
-                    'mysim',
+                    :target_system,
                     'movement',
                     :movement_id,
                     'sync',
@@ -1309,6 +1332,7 @@ def confirm_movement(
             ),
             {
                 "movement_id": mv.id,
+                "target_system": mysim_target_system,
                 "payload_json": "{}",
             },
         )
@@ -1560,13 +1584,16 @@ def confirm_serialized_asset_endpoint(
                 "uninstalled_by": payload.uninstalled_by,
                 "why_is_it_uninstalled": payload.why_is_it_uninstalled,
             }
+
+        mysim_target_system = get_mysim_target_system()
+
         existing_outbox = db.execute(
             text(
                 """
                 SELECT id
                 FROM integration_outbox
                 WHERE direction = 'outbound'
-                  AND target_system = 'mysim'
+                  AND target_system = :target_system
                   AND entity_type = 'movement'
                   AND entity_id = :movement_id
                   AND action = 'sync'
@@ -1575,7 +1602,10 @@ def confirm_serialized_asset_endpoint(
                 LIMIT 1
                 """
             ),
-            {"movement_id": mv.id},
+            {
+                "movement_id": mv.id,
+                "target_system": mysim_target_system,
+            },
         ).first()
 
         if existing_outbox is None:
@@ -1595,7 +1625,7 @@ def confirm_serialized_asset_endpoint(
                     )
                     VALUES (
                         'outbound',
-                        'mysim',
+                        :target_system,
                         'movement',
                         :movement_id,
                         'sync',
@@ -1607,9 +1637,9 @@ def confirm_serialized_asset_endpoint(
                     """
                 ),
                 {
-                "movement_id": mv.id,
-                "payload_json": json.dumps(outbox_payload),
-
+                    "movement_id": mv.id,
+                    "target_system": mysim_target_system,
+                    "payload_json": json.dumps(outbox_payload),
                 },
             )
         else:
@@ -1759,13 +1789,15 @@ def confirm_bulk_movement_endpoint(
         db.add(mv)
         db.flush()
 
+        mysim_target_system = get_mysim_target_system()
+
         existing_outbox = db.execute(
             text(
                 """
                 SELECT id
                 FROM integration_outbox
                 WHERE direction = 'outbound'
-                  AND target_system = 'mysim'
+                  AND target_system = :target_system
                   AND entity_type = 'movement'
                   AND entity_id = :movement_id
                   AND action = 'sync'
@@ -1774,7 +1806,10 @@ def confirm_bulk_movement_endpoint(
                 LIMIT 1
                 """
             ),
-            {"movement_id": mv.id},
+            {
+                "movement_id": mv.id,
+                "target_system": mysim_target_system,
+            },
         ).first()
 
         if existing_outbox is None:
@@ -1794,7 +1829,7 @@ def confirm_bulk_movement_endpoint(
                     )
                     VALUES (
                         'outbound',
-                        'mysim',
+                        :target_system,
                         'movement',
                         :movement_id,
                         'sync',
@@ -1807,6 +1842,7 @@ def confirm_bulk_movement_endpoint(
                 ),
                 {
                     "movement_id": mv.id,
+                    "target_system": mysim_target_system,
                     "payload_json": "{}",
                 },
             )

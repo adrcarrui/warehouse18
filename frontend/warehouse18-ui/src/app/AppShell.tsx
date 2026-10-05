@@ -34,7 +34,7 @@ const NAV: NavItem[] = [
   { label: "Movements", href: "/movements", icon: ArrowLeftRight },
   //{ label: "Locations", href: "/locations", icon: MapPin },
   //{ label: "Users", href: "/users", icon: Users },
-  //{ label: "RFID Monitor", href: "/rfid-monitor", icon: Activity },
+  { label: "RFID Monitor", href: "/rfid-monitor", icon: Activity },
   /*{ label: "Pistol Send EPC", href: "/pistol/send-epc", icon: Package },
   { label: "Pistol WS Test", href: "/pistol/ws-test", icon: Package },
   { label: "Pistol WS Monitor", href: "/pistol/ws-monitor", icon: Package },*/

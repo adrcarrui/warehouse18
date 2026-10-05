@@ -721,7 +721,7 @@ function RecentMovementsTable(props: {
               ? `${matchingMovements.length} matching movement${
                   matchingMovements.length === 1 ? "" : "s"
                 }`
-                  : "Up to eight recent records"}
+                  : ""}
           </div>
         </div>
 
@@ -938,7 +938,7 @@ export default function DashboardPage() {
       );
 
       const firstPagePromise = apiGet<PageOut<MovementOut>>(
-        "/api/movements",
+        "/api/movements/",
         {
           from_date: fromDate,
           to_date: toDate,
@@ -948,7 +948,7 @@ export default function DashboardPage() {
       );
 
       const typesPromise = apiGet<MovementTypeOut[]>(
-        "/api/movement-types",
+        "/api/movement-types/",
       );
 
       const [{ data: firstPage }, { data: types }] =

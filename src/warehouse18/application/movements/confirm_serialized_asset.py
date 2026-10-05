@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from decimal import Decimal
@@ -28,6 +29,21 @@ ALLOWED_GI_ASSET_STATUSES = {"active"}
 
 class ConfirmSerializedAssetError(ValueError):
     pass
+
+
+VALID_MYSIM_TARGET_SYSTEMS = {"mysim_tests", "mysim_itc"}
+
+
+def get_mysim_target_system() -> str:
+    target_system = os.getenv("MYSIM_TARGET_SYSTEM", "").strip().lower()
+
+    if target_system not in VALID_MYSIM_TARGET_SYSTEMS:
+        raise ConfirmSerializedAssetError(
+            "MYSIM_TARGET_SYSTEM must be configured as "
+            "'mysim_tests' or 'mysim_itc'"
+        )
+
+    return target_system
 
 
 @dataclass(frozen=True)
@@ -424,9 +440,11 @@ def _enqueue_mysim_outbox_event(
     movement_type_code: str,
     device_install_uninstall: dict | None = None,
 ) -> None:
+    mysim_target_system = get_mysim_target_system()
+
     existing = (
         db.query(IntegrationOutbox)
-        .filter(IntegrationOutbox.target_system == "mysim")
+        .filter(IntegrationOutbox.target_system == mysim_target_system)
         .filter(IntegrationOutbox.entity_type == "movement")
         .filter(IntegrationOutbox.entity_id == movement.id)
         .filter(IntegrationOutbox.action == "sync")
@@ -466,7 +484,7 @@ def _enqueue_mysim_outbox_event(
     db.add(
         IntegrationOutbox(
             direction="outbound",
-            target_system="mysim",
+            target_system=mysim_target_system,
             entity_type="movement",
             entity_id=movement.id,
             action="serialized_asset_confirmed",
